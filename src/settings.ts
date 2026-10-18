@@ -22,6 +22,15 @@ export interface QuestionGenerationDefaults {
 
 export type AiProvider = 'anthropic' | 'openai';
 export type ConflictPolicy = 'newest' | 'obsidian' | 'anki';
+export type FieldDisplay = 'show' | 'dim' | 'hide';
+export type Difficulty = 'easy' | 'medium' | 'hard';
+export type Conciseness = 'very-concise' | 'concise' | 'detailed';
+
+export interface GenerationOptions {
+	difficulty: Difficulty;
+	conciseness: Conciseness;
+	extra: boolean;
+}
 
 export interface SyncSettings {
 	basicSeparator: string;
@@ -30,6 +39,7 @@ export interface SyncSettings {
 	basicModel: string;
 	reversedModel: string;
 	clozeModel: string;
+	extraField: string;
 	tags: string;
 	conflictPolicy: ConflictPolicy;
 	deleteRemovedNotes: boolean;
@@ -40,11 +50,14 @@ export interface SyncSettings {
 export interface PluginSettings {
 	ankiConnectPort: number;
 	ankiDestinationDeck: string;
+	fieldDisplay: FieldDisplay;
 	aiProvider: AiProvider;
 	// names of secrets in Obsidian's keychain (app.secretStorage), never the keys themselves
 	anthropicSecretId: string;
 	anthropicModel: string;
 	aiInsertIntoNote: boolean;
+	aiHeading: string;
+	generation: GenerationOptions;
 	openAiSecretId: string;
 	sync: SyncSettings;
 	gptAdvancedOptions: GptAdvancedOptions;
@@ -54,10 +67,17 @@ export interface PluginSettings {
 export const DEFAULT_SETTINGS: PluginSettings = {
 	ankiConnectPort: ANKI_CONNECT_DEFAULT_PORT,
 	ankiDestinationDeck: '',
+	fieldDisplay: 'dim',
 	aiProvider: 'anthropic',
 	anthropicSecretId: 'auto-anki-anthropic',
 	anthropicModel: 'claude-opus-5-5',
 	aiInsertIntoNote: true,
+	aiHeading: 'Flashcards',
+	generation: {
+		difficulty: 'medium',
+		conciseness: 'concise',
+		extra: false,
+	},
 	openAiSecretId: 'auto-anki-openai',
 	sync: {
 		basicSeparator: '::',
@@ -66,6 +86,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
 		basicModel: 'Basic',
 		reversedModel: 'Basic (and reversed card)',
 		clozeModel: 'Cloze',
+		extraField: 'Extra',
 		tags: 'obsidian',
 		conflictPolicy: 'newest',
 		deleteRemovedNotes: false,

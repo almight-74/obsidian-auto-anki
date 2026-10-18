@@ -7,11 +7,12 @@ import type {
     ChatCompletionSystemMessageParam,
 } from 'openai/resources';
 import logger from 'src/logger';
-import { GptAdvancedOptions } from 'src/settings';
+import { GenerationOptions, GptAdvancedOptions } from 'src/settings';
 
 export interface CardInformation {
     q: string;
     a: string;
+    extra?: string;
 }
 
 export function checkGpt(openAiKey: string) {
@@ -63,26 +64,34 @@ const SAMPLE_OUTPUT = [
     // { q: '', a: '' },
 ]
 
-function generateRepeatedSampleOutput(num: number) {
-    if (num < SAMPLE_OUTPUT.length) return SAMPLE_OUTPUT.slice(0, num);
+// a short example is enough to show the format; repeating it per question only costs tokens
+const SAMPLE_SIZE = 3;
 
-    let count = 0;
-    const output = [];
-    while (count < num) {
-        output.push(...SAMPLE_OUTPUT)
-        count += SAMPLE_OUTPUT.length;
-    }
-    return output.slice(0, num);
-}
+const GPT_DIFFICULTY: Record<GenerationOptions['difficulty'], string> = {
+    'easy': 'recall of key terms and definitions',
+    'medium': 'understanding of concepts and how they relate',
+    'hard': 'application, comparison and edge cases',
+};
 
-function createMessages(notes: string, num: number) {
+const GPT_CONCISENESS: Record<GenerationOptions['conciseness'], string> = {
+    'very-concise': 'a few words, no full sentences',
+    'concise': 'at most one short sentence',
+    'detailed': '1-3 sentences including the key reasoning',
+};
+
+function createMessages(notes: string, num: number, opts: GenerationOptions) {
     const messages = [];
+    const format = opts.extra
+        ? '{ "questions_answers": [{ "q": "<question>", "a": "<answer>", "extra": "<one line of context or mnemonic>" }] }'
+        : '{ "questions_answers": [{ "q": "<question>", "a": "<answer>" }] }';
     messages.push({
         role: 'system',
-        content: `You will be provided notes on a specific topic. The notes are formatted in markdown. Based on the given notes, make a list of ${num} questions and short answers that can be used for reviewing said notes by spaced repetition. Use the following guidelines:
-        - output the questions and answers in the following JSON format { "questions_answers": [{ "q": "<generated question>", "a": "<generated answer>" }] }
-        - ensure that the questions cover the entire portion of the given notes, do not come up with similar questions or repeat the same questions
-    `} as ChatCompletionSystemMessageParam)
+        content: `Make ${num} spaced-repetition questions and answers from the given markdown notes.
+- JSON format: ${format}
+- cover the whole notes, no similar or repeated questions
+- difficulty: ${GPT_DIFFICULTY[opts.difficulty]}
+- answers: ${GPT_CONCISENESS[opts.conciseness]}`,
+    } as ChatCompletionSystemMessageParam)
 
     // Insert sample user prompt
     messages.push({
@@ -95,13 +104,9 @@ function createMessages(notes: string, num: number) {
     messages.push({
         role: 'assistant',
         content: JSON.stringify({
-            "questions_answers": generateRepeatedSampleOutput(num)
+            "questions_answers": SAMPLE_OUTPUT.slice(0, SAMPLE_SIZE)
         }),
     } as ChatCompletionAssistantMessageParam);
-
-    console.log({
-        "questions_answers": generateRepeatedSampleOutput(num)
-    })
 
     // Insert notes
     messages.push({
@@ -118,6 +123,7 @@ export async function convertNotesToFlashcards(
     num_q: number,
     num: number,
     options: GptAdvancedOptions,
+    generationOptions: GenerationOptions,
 ) {
     let response: ChatCompletion;
     try {
@@ -132,7 +138,7 @@ export async function convertNotesToFlashcards(
         response = await client.chat.completions.create({
             ...completionOptions,
             model: 'gpt-3.5-turbo-1106',
-            messages: createMessages(notes, num_q),
+            messages: createMessages(notes, num_q, generationOptions),
             max_tokens: tokensPerQuestion * num_q,
             n: num,
             stream: false,

@@ -1,4 +1,5 @@
 import { App, Modal, Notice, Setting } from 'obsidian';
+import { Conciseness, Difficulty, GenerationOptions } from './settings';
 
 import { 
     checkAnkiAvailability,
@@ -17,7 +18,12 @@ function checkValidNumGreaterThanZero(text: string|number, inclusiveZero?: boole
     return inclusiveZero ? +text >= 0 : +text > 0;
 }
 
-export type CardGenerator = (notes: string, numQuestions: number, numSets: number) => Promise<CardInformation[][]>;
+export type CardGenerator = (
+    notes: string,
+    numQuestions: number,
+    numSets: number,
+    options: GenerationOptions,
+) => Promise<CardInformation[][]>;
 export type CardsConfirmedHandler = (cards: CardInformation[]) => void;
 
 export class ExportModal extends Modal {
@@ -30,6 +36,7 @@ export class ExportModal extends Modal {
     generate: CardGenerator;
     onConfirm: CardsConfirmedHandler;
     statusBar: StatusBarElement;
+    options: GenerationOptions;
     
     constructor(
         app: App,
@@ -38,6 +45,7 @@ export class ExportModal extends Modal {
         ankiConnectPort: number,
         generate: CardGenerator,
         onConfirm: CardsConfirmedHandler,
+        defaultOptions: GenerationOptions,
         dafaultNumQuestions?: number,
         defaultNumAlternatives?: number,
     ) {
@@ -47,6 +55,7 @@ export class ExportModal extends Modal {
         this.port = ankiConnectPort;
         this.generate = generate;
         this.onConfirm = onConfirm;
+        this.options = { ...defaultOptions };
 
         this.n_q = dafaultNumQuestions ?? 5;
         this.n_q_valid = checkValidNumGreaterThanZero(this.n_q);
@@ -92,6 +101,34 @@ export class ExportModal extends Modal {
             );
 
         new Setting(contentEl)
+            .setName('Difficulty')
+            .addDropdown((d) => d
+                .addOption('easy', 'Easy (recall)')
+                .addOption('medium', 'Medium (understanding)')
+                .addOption('hard', 'Hard (application)')
+                .setValue(this.options.difficulty)
+                .onChange((value) => { this.options.difficulty = value as Difficulty })
+            );
+
+        new Setting(contentEl)
+            .setName('Answer length')
+            .addDropdown((d) => d
+                .addOption('very-concise', 'Very concise')
+                .addOption('concise', 'Concise')
+                .addOption('detailed', 'Detailed')
+                .setValue(this.options.conciseness)
+                .onChange((value) => { this.options.conciseness = value as Conciseness })
+            );
+
+        new Setting(contentEl)
+            .setName('Extra field')
+            .setDesc('Add a short line of context or a mnemonic to each card.')
+            .addToggle((t) => t
+                .setValue(this.options.extra)
+                .onChange((value) => { this.options.extra = value })
+            );
+
+        new Setting(contentEl)
             .addButton((btn) =>
                 btn
                 .setButtonText('Generate Cards')
@@ -108,6 +145,7 @@ export class ExportModal extends Modal {
                         this.data,
                         this.n_q,
                         this.n_alt+1,
+                        this.options,
                     );
                     if (this.statusBar.doReset) this.statusBar.doReset();
 
@@ -188,6 +226,14 @@ class QuestionSetWithSelections {
             aInput.rows = 2;
             aInput.oninput = () => { this.questions[idx] = { ...this.questions[idx], a: aInput.value } };
 
+            if (q.extra != null) {
+                htmlQuestion.createEl('div', { cls: 'question-option__label', text: 'Extra' });
+                const eInput = htmlQuestion.createEl('textarea', { cls: 'question-option__input' });
+                eInput.value = q.extra;
+                eInput.rows = 1;
+                eInput.oninput = () => { this.questions[idx] = { ...this.questions[idx], extra: eInput.value } };
+            }
+
             htmlList.appendChild(htmlQuestion);
         })
 
@@ -255,7 +301,7 @@ export class ChoiceModal extends Modal {
                 const question_choices: CardInformation[] = [];
     
                 card_sets.forEach((set) => {
-                    if (i < set.length) question_choices.push(set[i]);
+                    if (i < set.length && set[i] != null) question_choices.push(set[i]);
                 })
                 this.question_sets.push(
                     new QuestionSetWithSelections(question_choices, this.renderContent, false, true)
@@ -265,7 +311,7 @@ export class ChoiceModal extends Modal {
         else {
             this.n_sets = 1;
             this.question_sets.push(
-                new QuestionSetWithSelections(card_sets[0], this.renderContent, true)
+                new QuestionSetWithSelections(card_sets[0].filter((c) => c != null), this.renderContent, true)
             );
         }
     }
@@ -492,5 +538,60 @@ export class AnkiDeckModal extends Modal {
     onClose() {
         const { contentEl } = this;
         contentEl.empty();
+    }
+}
+
+export interface NoteHeading {
+    heading: string;
+    level: number;
+    line: number;
+}
+
+// pick which heading sections of a note to generate cards from
+export class HeadingPickerModal extends Modal {
+    selected = new Set<number>();
+
+    constructor(
+        app: App,
+        private headings: NoteHeading[],
+        private onConfirm: (chosen: NoteHeading[]) => void,
+    ) {
+        super(app);
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.createEl('h1', { text: 'Generate cards from headings' });
+        contentEl.createEl('p', { text: 'Tick the sections to send to the AI. Each section includes its sub-headings.' });
+
+        const list = contentEl.createEl('div', { cls: 'heading-options-container' });
+        this.headings.forEach((h, idx) => {
+            const row = list.createEl('label', { cls: 'heading-option' });
+            row.style.paddingLeft = `${(h.level - 1) * 1.25}em`;
+            const checkbox = row.createEl('input', { type: 'checkbox' });
+            checkbox.onchange = () => {
+                if (checkbox.checked) this.selected.add(idx);
+                else this.selected.delete(idx);
+            };
+            row.createSpan({ text: h.heading });
+        });
+
+        new Setting(contentEl)
+            .addButton((btn) => btn
+                .setButtonText('Continue')
+                .setCta()
+                .onClick(() => {
+                    if (this.selected.size === 0) {
+                        new Notice('Select at least one heading');
+                        return;
+                    }
+                    this.close();
+                    this.onConfirm(this.headings.filter((_, idx) => this.selected.has(idx)));
+                })
+            );
+    }
+
+    onClose() {
+        this.contentEl.empty();
     }
 }

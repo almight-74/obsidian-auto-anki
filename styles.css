@@ -154,3 +154,32 @@ If your plugin does not need CSS, delete this file.
 .anki-connection-result.--error {
     color: var(--text-error);
 }
+
+.aa-card-field {
+    color: var(--text-muted);
+}
+
+.aa-card-field.--dim,
+body.aa-fields-dim .markdown-preview-view .aa-card-field {
+    font-size: 0.8em;
+    opacity: 0.55;
+}
+
+body.aa-fields-hide .markdown-preview-view .aa-card-field {
+    display: none;
+}
+
+.heading-options-container {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35em;
+    max-height: 50vh;
+    overflow-y: auto;
+}
+
+.heading-option {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    cursor: pointer;
+}

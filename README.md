@@ -28,6 +28,16 @@ Write cards anywhere in a note, one per line:
 | `Question:::Answer` | Basic (and reversed card) |
 | `The ==mitochondria== is the ==powerhouse==` | Cloze (one deletion per highlight) |
 
+Optional inline fields on any card line:
+
+| Field | Meaning |
+|---|---|
+| `{{extra::context or mnemonic}}` | Extra field: the note type's `Extra` field (Cloze: `Back Extra`), or shown under the answer if the note type has none |
+| `{{deck::Biology::Cells}}` | Deck for this card (overrides the note's `anki-deck` frontmatter and the default deck) |
+| `{{tag::cells exam1}}` | Anki tags (space separated). `{{tag::}}` clears them |
+
+After each sync, every card line shows its real Anki deck and tags (`{{deck::…}} {{tag::…}}`). Change them on the line to move/retag the note in Anki; move or retag it in Anki and the line updates. Use the "Card fields in editor" setting or the "Toggle card fields" command to show, dim, or hide these fields while editing.
+
 List / quote prefixes (`- `, `1. `, `> `) are fine. Lines inside code blocks, `$$` math blocks and frontmatter are ignored. `::` inside `` `inline code` `` is ignored, but plain text like `std::vector` is read as a card, so wrap it in backticks.
 
 Commands:
@@ -40,12 +50,14 @@ How sync works:
 - Edit in Obsidian -> pushed to Anki. Edit in Anki -> written back to the note. Both edited -> conflict setting (newest edit wins by default).
 - Anki review history is never touched. Deleting a note in Anki re-creates it on the next sync. Changing `::` to `:::` (card type) replaces the note.
 - New note ids are saved to a journal before the note file is written, so if the file changes mid-sync or Obsidian closes, the next sync picks the id back up and doesn't create a duplicate.
-- Set `anki-deck: My Deck` in a note's frontmatter to choose its deck; otherwise the default deck from settings is used.
+- Deck priority: `{{deck::}}` on the line, then `anki-deck: My Deck` in the note's frontmatter, then the default deck from settings.
 - Bold, italics, inline code, `$math$` and `<br>` round-trip. Other formatting edited in Anki is reduced to plain text when pulled back. Images are not synced.
 
 ## AI Card Generation (optional)
 
-_Generate cards with AI from current note_ / _from selection_ uses Claude (default, `claude-opus-5-5`; any Claude model id can be set) or OpenAI GPT. Pick the cards you want; they're inserted into the note as `Question::Answer` lines right after the selection (or at the end of the note) and synced, so they're tracked like hand-written cards. Turn off "Insert generated cards into note" to send them straight to Anki without tracking.
+Token use is kept low: notes are stripped of frontmatter, links, embeds and sync markers before sending; alternatives come from a single request; Claude runs at low effort. For the lowest cost set the model to `claude-haiku-5-5`.
+
+_Generate cards with AI from current note_ / _from selection_ / _from headings_ (tick only the sections you want, e.g. today's new heading) uses Claude (default, `claude-opus-5-5`; any Claude model id can be set) or OpenAI GPT. Choose difficulty, answer length and whether to add an extra field, then review and edit the cards. They're inserted at the end of the note's `## Flashcards` section (created if missing; heading configurable) and synced, so they're tracked like hand-written cards. Turn off "Insert generated cards into note" to send them straight to Anki without tracking.
 
 ## Plugin Requirements
 

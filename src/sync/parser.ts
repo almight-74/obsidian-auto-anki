@@ -2,6 +2,8 @@
 //   Front::Back          -> basic card
 //   Front:::Back         -> basic + reversed card
 //   text with ==cloze==  -> cloze card (one cloze deletion per highlight)
+// Optional inline fields on any card line:
+//   {{extra::text}}  {{deck::Deck::Sub}}  {{tag::tag1 tag2}}
 // Each synced card carries its Anki note id at the end of the line: <!--anki:123-->
 
 export type CardType = 'basic' | 'reversed' | 'cloze';
@@ -20,6 +22,9 @@ export interface ParsedCard {
     front: string;     // basic/reversed only
     back: string;      // basic/reversed only
     text: string;      // cloze only
+    extra: string;          // {{extra::}}, all types
+    deck: string | null;    // {{deck::}}, null = note / default deck
+    tags: string[] | null;  // {{tag::}}, null = not specified on the line
     id: number | null;
 }
 
@@ -28,6 +33,17 @@ const PREFIX_REGEX = /^(\s*(?:>\s*)*(?:[-*+]\s+(?:\[.\]\s+)?|\d+[.)]\s+)?)/;
 const FENCE_REGEX = /^\s*(```|~~~)/;
 const HIGHLIGHT_REGEX = /==[^=\n]+?==/;
 const ANKI_CLOZE_REGEX = /\{\{c\d+::/;
+// {{deck::...}}, {{tag::...}} / {{tags::...}}, {{extra::...}}; value can't contain "}}"
+const FIELD_REGEX = /\s*\{\{(deck|tags?|extra)::((?:(?!\}\}).)*)\}\}/gi;
+const META_FIELD_REGEX = /\s*\{\{(deck|tags?)::((?:(?!\}\}).)*)\}\}/gi;
+
+export function splitTags(value: string) {
+    return value.split(/[\s,]+/).filter((t) => t.length > 0);
+}
+
+function escapeFieldValue(value: string) {
+    return value.replace(/\}\}/g, '} }').replace(/\r?\n/g, '<br>');
+}
 
 export function formatIdMarker(id: number) {
     return `<!--anki:${id}-->`;
@@ -54,10 +70,19 @@ export function parseCardLine(raw: string, lineIdx: number, opts: ParserOptions)
     }
 
     const prefix = (body.match(PREFIX_REGEX) ?? [''])[0];
-    const content = body.slice(prefix.length);
+    let extra = '';
+    let deck: string | null = null;
+    let tags: string[] | null = null;
+    const content = body.slice(prefix.length).replace(FIELD_REGEX, (_, key: string, value: string) => {
+        const k = key.toLowerCase();
+        if (k === 'extra') extra = value.trim();
+        else if (k === 'deck') deck = value.trim() || null;
+        else tags = [...(tags ?? []), ...splitTags(value)];
+        return '';
+    });
     if (content.trim().length === 0) return null;
 
-    const base = { line: lineIdx, raw, prefix, id, front: '', back: '', text: '' };
+    const base = { line: lineIdx, raw, prefix, id, front: '', back: '', text: '', extra, deck, tags };
 
     const revIdx = findSeparator(content, opts.reversedSeparator);
     if (revIdx >= 0) {
@@ -113,8 +138,15 @@ export function parseCards(content: string, opts: ParserOptions): ParsedCard[] {
     return cards;
 }
 
+function formatMeta(deck: string | null, tags: string[] | null) {
+    let out = '';
+    if (deck) out += ` {{deck::${escapeFieldValue(deck)}}}`;
+    if (tags && tags.length > 0) out += ` {{tag::${tags.join(' ')}}}`;
+    return out;
+}
+
 export function formatCardLine(
-    card: Pick<ParsedCard, 'prefix' | 'type' | 'front' | 'back' | 'text'>,
+    card: Pick<ParsedCard, 'prefix' | 'type' | 'front' | 'back' | 'text' | 'extra' | 'deck' | 'tags'>,
     opts: ParserOptions,
     id: number | null,
     keepCarriageReturn = false,
@@ -123,15 +155,22 @@ export function formatCardLine(
     if (card.type === 'cloze') body = card.text;
     else if (card.type === 'reversed') body = `${card.front}${opts.reversedSeparator}${card.back}`;
     else body = `${card.front}${opts.basicSeparator}${card.back}`;
+    if (card.extra) body += ` {{extra::${escapeFieldValue(card.extra)}}}`;
+    body += formatMeta(card.deck, card.tags);
 
     const marker = id != null ? ` ${formatIdMarker(id)}` : '';
     return `${card.prefix}${body}${marker}${keepCarriageReturn ? '\r' : ''}`;
 }
 
-export function setIdOnLine(raw: string, id: number) {
+// rewrites only the deck/tag fields and id marker, leaving the user's text as written
+export function setMetaOnLine(raw: string, id: number, deck: string | null, tags: string[] | null) {
     const cr = raw.endsWith('\r');
-    const line = raw.replace(/\r$/, '').replace(ID_MARKER_REGEX, '');
-    return `${line} ${formatIdMarker(id)}${cr ? '\r' : ''}`;
+    const line = raw
+        .replace(/\r$/, '')
+        .replace(ID_MARKER_REGEX, '')
+        .replace(META_FIELD_REGEX, '')
+        .replace(/\s+$/, '');
+    return `${line}${formatMeta(deck, tags)} ${formatIdMarker(id)}${cr ? '\r' : ''}`;
 }
 
 export function hasIdMarkers(content: string) {

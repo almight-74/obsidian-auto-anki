@@ -13,12 +13,15 @@ import {
 
 import {
 	AiProvider,
+	Conciseness,
 	ConflictPolicy,
+	Difficulty,
+	FieldDisplay,
 	PluginSettings,
 	DEFAULT_SETTINGS,
 } from './settings';
 
-import { AnkiDeckModal, CardGenerator, ExportModal } from './modal';
+import { AnkiDeckModal, CardGenerator, ExportModal, HeadingPickerModal, NoteHeading } from './modal';
 // import {
 //     electronEncrypt,
 //     electronDecrypt,
@@ -28,6 +31,14 @@ import { isNumeric } from './utils/validations';
 import { StatusBarElement } from './utils/cusom-types';
 import { CardInformation, checkGpt, convertNotesToFlashcards } from './utils/gpt';
 import { convertNotesToFlashcardsWithClaude } from './utils/claude';
+import { compactNotes } from './utils/text';
+import { cardFieldsExtension, wrapCardFields } from './editor';
+
+const FIELD_DISPLAY_LABELS: Record<FieldDisplay, string> = {
+	show: 'Show',
+	dim: 'Dim',
+	hide: 'Hide (shown on the line being edited)',
+};
 import { EMPTY_SYNC_STATE, LineRange, SyncEngine, SyncReport, SyncState } from './sync/engine';
 
 function mergeDefaults<T>(defaults: T, data: unknown): T {
@@ -98,6 +109,21 @@ export default class AutoAnkiPlugin extends Plugin {
 
 		this.addRibbonIcon('refresh-cw', 'Sync flashcards with Anki', () => this.runSync('vault'));
 
+		this.registerEditorExtension(cardFieldsExtension(() => this.settings.fieldDisplay));
+		this.registerMarkdownPostProcessor((el) => wrapCardFields(el));
+		this.applyFieldDisplay();
+
+		this.addCommand({
+			id: 'toggle-card-fields',
+			name: 'Toggle card fields (show / dim / hide)',
+			callback: async () => {
+				const order: FieldDisplay[] = ['show', 'dim', 'hide'];
+				const next = order[(order.indexOf(this.settings.fieldDisplay) + 1) % order.length];
+				await this.setFieldDisplay(next);
+				new Notice(`Card fields: ${FIELD_DISPLAY_LABELS[next]}`);
+			},
+		});
+
 		this.addCommand({
 			id: 'test-anki-connection',
 			name: 'Test connection to Anki',
@@ -164,6 +190,18 @@ export default class AutoAnkiPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: 'generate-cards-from-headings',
+			name: 'Generate cards with AI from headings',
+			checkCallback: (checking: boolean) => {
+				if (this.aiGenerator() == null) return false;
+				const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+				if (view?.file == null) return false;
+				if (!checking) this.openHeadingPicker(view);
+				return true;
+			},
+		});
+
+		this.addCommand({
 			id: 'export-text-selection-to-anki',
 			name: 'Generate cards with AI from selection',
 			editorCheckCallback: (checking: boolean, editor: Editor, view: MarkdownView) => {
@@ -190,6 +228,20 @@ export default class AutoAnkiPlugin extends Plugin {
 	}
 	
 	onunload() {
+		document.body.removeClass('aa-fields-show', 'aa-fields-dim', 'aa-fields-hide');
+	}
+
+	applyFieldDisplay() {
+		document.body.removeClass('aa-fields-show', 'aa-fields-dim', 'aa-fields-hide');
+		document.body.addClass(`aa-fields-${this.settings.fieldDisplay}`);
+		// rebuilds editor decorations
+		this.app.workspace.updateOptions();
+	}
+
+	async setFieldDisplay(display: FieldDisplay) {
+		this.settings.fieldDisplay = display;
+		await this.saveSettings();
+		this.applyFieldDisplay();
 	}
 
 	port() {
@@ -277,14 +329,52 @@ export default class AutoAnkiPlugin extends Plugin {
 		if (s.aiProvider === 'anthropic') {
 			const key = this.getSecret(s.anthropicSecretId);
 			if (!key) return null;
-			return (notes, nq, nsets) => convertNotesToFlashcardsWithClaude(key, s.anthropicModel, notes, nq, nsets);
+			return (notes, nq, nsets, opts) => convertNotesToFlashcardsWithClaude(key, s.anthropicModel, compactNotes(notes), nq, nsets, opts);
 		}
 		const key = this.getSecret(s.openAiSecretId);
 		if (!key) return null;
-		return async (notes, nq, nsets) => {
+		return async (notes, nq, nsets, opts) => {
 			if (!checkGpt(key)) return [];
-			return convertNotesToFlashcards(key, notes, nq, nsets, s.gptAdvancedOptions);
+			return convertNotesToFlashcards(key, compactNotes(notes), nq, nsets, s.gptAdvancedOptions, opts);
 		};
+	}
+
+	openHeadingPicker(view: MarkdownView) {
+		const lines = view.data.split('\n');
+		const flashcardsHeading = this.settings.aiHeading.trim().toLowerCase();
+		const headings: NoteHeading[] = (this.app.metadataCache.getFileCache(view.file as TFile)?.headings ?? [])
+			.map((h) => ({ heading: h.heading, level: h.level, line: h.position.start.line }))
+			.filter((h) => h.heading.trim().toLowerCase() !== flashcardsHeading);
+		if (headings.length === 0) {
+			new Notice('This note has no headings');
+			return;
+		}
+
+		new HeadingPickerModal(this.app, headings, (chosen) => {
+			// a section runs to the next heading of the same or higher level;
+			// overlapping picks (parent + child) are merged so text isn't sent twice
+			const all = this.app.metadataCache.getFileCache(view.file as TFile)?.headings ?? [];
+			const include = new Set<number>();
+			for (const h of chosen) {
+				const next = all.find((o) => o.position.start.line > h.line && o.level <= h.level);
+				const end = next ? next.position.start.line : lines.length;
+				for (let i = h.line; i < end; i++) include.add(i);
+			}
+			// never send the generated-cards section back to the AI
+			const fc = all.find((o) => o.heading.trim().toLowerCase() === flashcardsHeading);
+			if (fc) {
+				const next = all.find((o) => o.position.start.line > fc.position.start.line && o.level <= fc.level);
+				const end = next ? next.position.start.line : lines.length;
+				for (let i = fc.position.start.line; i < end; i++) include.delete(i);
+			}
+			const text = lines.filter((_, i) => include.has(i)).join('\n');
+			if (text.trim().length === 0) {
+				new Notice('The chosen sections are empty');
+				return;
+			}
+			const defaults = this.settings.questionGenerationDefaults.textSelection;
+			this.openAiModal(view, text, null, defaults.numQuestions, defaults.numAlternatives);
+		}).open();
 	}
 
 	openAiModal(view: MarkdownView, data: string, selection: string | null, numQuestions: number, numAlternatives: number) {
@@ -309,32 +399,72 @@ export default class AutoAnkiPlugin extends Plugin {
 			this.port(),
 			generate,
 			onConfirm,
+			this.settings.generation,
 			numQuestions,
 			numAlternatives,
 		).open();
 	}
 
-	// writes generated cards into the note as `Q::A` lines, then syncs just those lines
+	// writes generated cards into the note as `Q::A` lines, then syncs just those lines.
+	// Cards go to the end of the configured heading's section (created if missing),
+	// or right after the selection when no heading is set.
 	async insertCardsAndSync(file: TFile, cards: CardInformation[], selection: string | null) {
 		const sep = this.settings.sync.basicSeparator;
-		const clean = (t: string) => t.replace(/\r?\n/g, '<br>').split(sep).join(':').trim();
-		const cardLines = cards.map((c) => `${clean(c.q)}${sep}${clean(c.a)}`);
+		const clean = (t: string) => t
+			.replace(/\r?\n/g, '<br>')
+			.replace(/\{\{|\}\}/g, (m) => m.split('').join(' '))
+			.split(sep).join(':')
+			.trim();
+		const cardLines = cards.map((c) => {
+			const extra = c.extra ? clean(c.extra) : '';
+			return `${clean(c.q)}${sep}${clean(c.a)}${extra ? ` {{extra::${extra}}}` : ''}`;
+		});
+		const heading = this.settings.aiHeading.trim();
 
 		let range: LineRange = { from: 0, to: 0 };
 		await this.app.vault.process(file, (data) => {
-			let insertAt = data.length;
-			if (selection) {
-				const idx = data.indexOf(selection);
-				if (idx >= 0) {
-					const lineEnd = data.indexOf('\n', idx + selection.length);
-					insertAt = lineEnd < 0 ? data.length : lineEnd;
+			const lines = data.split('\n');
+			let at: number;
+
+			if (heading) {
+				const headingRegex = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
+				let hIdx = -1;
+				let level = 0;
+				for (let i = 0; i < lines.length; i++) {
+					const m = lines[i].replace(/\r$/, '').match(headingRegex);
+					if (m && m[2].toLowerCase() === heading.toLowerCase()) { hIdx = i; level = m[1].length; break; }
+				}
+				if (hIdx >= 0) {
+					let end = lines.length;
+					for (let i = hIdx + 1; i < lines.length; i++) {
+						const m = lines[i].replace(/\r$/, '').match(headingRegex);
+						if (m && m[1].length <= level) { end = i; break; }
+					}
+					at = end;
+					while (at > hIdx + 1 && lines[at - 1].trim() === '') at--;
+					if (at === hIdx + 1) lines.splice(at++, 0, '');
+					// keep a blank line before the next heading
+					if (at < lines.length && lines[at].trim() !== '') lines.splice(at, 0, '');
+				}
+				else {
+					while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
+					if (lines.length > 0) lines.push('');
+					lines.push(`## ${heading}`, '');
+					at = lines.length;
+					lines.push('');
 				}
 			}
-			const before = data.slice(0, insertAt);
-			const block = `${before.endsWith('\n') || before.length === 0 ? '' : '\n'}\n${cardLines.join('\n')}\n`;
-			const from = (before + block).split('\n').length - 1 - cardLines.length;
-			range = { from, to: from + cardLines.length - 1 };
-			return before + block + data.slice(insertAt);
+			else {
+				at = lines.length;
+				const idx = selection ? data.indexOf(selection) : -1;
+				if (idx >= 0) at = data.slice(0, idx + (selection ?? '').length).split('\n').length;
+				lines.splice(at, 0, '');
+				at++;
+			}
+
+			lines.splice(at, 0, ...cardLines);
+			range = { from: at, to: at + cardLines.length - 1 };
+			return lines.join('\n');
 		});
 
 		this.statusBar.doDisplayRunning?.();
@@ -472,6 +602,15 @@ class AutoAnkiSettingTab extends PluginSettingTab {
 		containerEl.createEl('h2', { text: 'Sync' });
 
 		new Setting(containerEl)
+			.setName('Card fields in editor')
+			.setDesc('How {{deck::}}, {{tag::}}, {{extra::}} and <!--anki:ID--> look in notes. Also: command "Toggle card fields".')
+			.addDropdown(d => {
+				(Object.keys(FIELD_DISPLAY_LABELS) as FieldDisplay[]).forEach((k) => d.addOption(k, FIELD_DISPLAY_LABELS[k]));
+				d.setValue(this.plugin.settings.fieldDisplay)
+					.onChange(async (value) => { await this.plugin.setFieldDisplay(value as FieldDisplay); });
+			});
+
+		new Setting(containerEl)
 			.setName('Tags')
 			.setDesc('Tags added to new Anki notes (space or comma separated).')
 			.addText(t => t
@@ -546,7 +685,7 @@ class AutoAnkiSettingTab extends PluginSettingTab {
 				})
 			);
 
-		const textSetting = (name: string, desc: string, key: 'basicSeparator' | 'reversedSeparator' | 'basicModel' | 'reversedModel' | 'clozeModel') => {
+		const textSetting = (name: string, desc: string, key: 'basicSeparator' | 'reversedSeparator' | 'basicModel' | 'reversedModel' | 'clozeModel' | 'extraField') => {
 			new Setting(containerEl)
 				.setName(name)
 				.setDesc(desc)
@@ -563,7 +702,8 @@ class AutoAnkiSettingTab extends PluginSettingTab {
 		textSetting('Reversed separator', 'Separator for cards that also get a reversed card.', 'reversedSeparator');
 		textSetting('Basic note type', 'Anki note type for basic cards (first field = question, second = answer).', 'basicModel');
 		textSetting('Reversed note type', 'Anki note type for reversed cards.', 'reversedModel');
-		textSetting('Cloze note type', 'Anki note type for cloze cards (first field = text).', 'clozeModel');
+		textSetting('Cloze note type', 'Anki note type for cloze cards (first field = text, second = extra).', 'clozeModel');
+		textSetting('Extra field', 'Field in the basic/reversed note types that receives the extra text. If the note type has no such field, the extra is shown under the answer.', 'extraField');
 
 		containerEl.createEl('h2', { text: 'AI card generation' });
 
@@ -615,6 +755,55 @@ class AutoAnkiSettingTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.aiInsertIntoNote)
 				.onChange(async (value) => {
 					this.plugin.settings.aiInsertIntoNote = value;
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Flashcards heading')
+			.setDesc('Generated cards are added at the end of this heading\'s section, which is created if missing. Leave empty to insert right after the selection.')
+			.addText(t => t
+				.setPlaceholder('Flashcards')
+				.setValue(this.plugin.settings.aiHeading)
+				.onChange(async (value) => {
+					this.plugin.settings.aiHeading = value;
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Default difficulty')
+			.addDropdown(d => d
+				.addOption('easy', 'Easy (recall)')
+				.addOption('medium', 'Medium (understanding)')
+				.addOption('hard', 'Hard (application)')
+				.setValue(this.plugin.settings.generation.difficulty)
+				.onChange(async (value) => {
+					this.plugin.settings.generation.difficulty = value as Difficulty;
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Default answer length')
+			.addDropdown(d => d
+				.addOption('very-concise', 'Very concise')
+				.addOption('concise', 'Concise')
+				.addOption('detailed', 'Detailed')
+				.setValue(this.plugin.settings.generation.conciseness)
+				.onChange(async (value) => {
+					this.plugin.settings.generation.conciseness = value as Conciseness;
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Generate extra field')
+			.setDesc('Add a short line of context or a mnemonic to each generated card, by default.')
+			.addToggle(t => t
+				.setValue(this.plugin.settings.generation.extra)
+				.onChange(async (value) => {
+					this.plugin.settings.generation.extra = value;
 					await this.plugin.saveSettings();
 				})
 			);
