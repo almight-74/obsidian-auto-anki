@@ -140,3 +140,17 @@ If your plugin does not need CSS, delete this file.
     resize: vertical;
     font-family: inherit;
 }
+
+.anki-connection-result {
+    white-space: pre-wrap;
+    font-size: var(--font-ui-small);
+    padding: 0 0 0.75em;
+}
+
+.anki-connection-result.--ok {
+    color: var(--text-success);
+}
+
+.anki-connection-result.--error {
+    color: var(--text-error);
+}

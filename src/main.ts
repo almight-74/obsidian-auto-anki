@@ -23,7 +23,7 @@ import { AnkiDeckModal, CardGenerator, ExportModal } from './modal';
 //     electronEncrypt,
 //     electronDecrypt,
 // } from './utils/enc';
-import { ANKI_CONNECT_DEFAULT_PORT } from './utils/anki';
+import { ANKI_CONNECT_DEFAULT_PORT, ankiInvoke } from './utils/anki';
 import { isNumeric } from './utils/validations';
 import { StatusBarElement } from './utils/cusom-types';
 import { CardInformation, checkGpt, convertNotesToFlashcards } from './utils/gpt';
@@ -97,6 +97,15 @@ export default class AutoAnkiPlugin extends Plugin {
 		}));
 
 		this.addRibbonIcon('refresh-cw', 'Sync flashcards with Anki', () => this.runSync('vault'));
+
+		this.addCommand({
+			id: 'test-anki-connection',
+			name: 'Test connection to Anki',
+			callback: async () => {
+				const r = await this.testAnkiConnection();
+				new Notice(r.message, r.ok ? 6000 : 10000);
+			},
+		});
 
 		this.addCommand({
 			id: 'sync-current-file-with-anki',
@@ -231,6 +240,32 @@ export default class AutoAnkiPlugin extends Plugin {
 		if (report.deleted > 0) parts.push(`${report.deleted} deleted`);
 		const errors = report.errors.length > 0 ? `\n\nErrors:\n${report.errors.slice(0, 5).join('\n')}` : '';
 		new Notice(`Anki sync: ${parts.join(', ')}${errors}`, errors ? 10000 : 4000);
+	}
+
+	// checks Anki Connect is reachable and that the note types used for sync exist
+	async testAnkiConnection(): Promise<{ ok: boolean; message: string }> {
+		const port = this.port();
+		try {
+			const version = await ankiInvoke<number>(port, 'version');
+			const decks = await ankiInvoke<string[]>(port, 'deckNames');
+			const models = await ankiInvoke<string[]>(port, 'modelNames');
+			const { basicModel, reversedModel, clozeModel } = this.settings.sync;
+			const missing = [basicModel, reversedModel, clozeModel].filter((m) => !models.includes(m));
+			const deck = this.settings.ankiDestinationDeck;
+			const lines = [`Connected to Anki Connect on port ${port} (API v${version}), ${decks.length} deck(s).`];
+			if (deck && !decks.includes(deck)) lines.push(`Default deck "${deck}" doesn't exist yet; it will be created on first sync.`);
+			if (missing.length > 0) {
+				lines.push(`Missing note type(s): ${missing.join(', ')}. Fix the names under Sync settings.`);
+				return { ok: false, message: lines.join('\n') };
+			}
+			return { ok: true, message: lines.join('\n') };
+		}
+		catch (err) {
+			return {
+				ok: false,
+				message: `Could not reach Anki Connect on port ${port}.\nMake sure Anki is open and the Anki Connect add-on (code 2055492159) is installed, then restart Anki.\n(${err.message})`,
+			};
+		}
 	}
 
 	getSecret(id: string) {
@@ -391,6 +426,23 @@ class AutoAnkiSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		
 		containerEl.empty();
+
+		const testSetting = new Setting(containerEl)
+			.setName('Test Anki connection')
+			.setDesc('Checks that Anki is running with Anki Connect, and that the note types used for sync exist.');
+		const testResult = containerEl.createEl('div', { cls: 'anki-connection-result' });
+		testSetting.addButton(btn => btn
+			.setButtonText('Test connection')
+			.setCta()
+			.onClick(async () => {
+				btn.setDisabled(true).setButtonText('Testing...');
+				const r = await this.plugin.testAnkiConnection();
+				btn.setDisabled(false).setButtonText('Test connection');
+				testResult.setText(r.message);
+				testResult.toggleClass('--ok', r.ok);
+				testResult.toggleClass('--error', !r.ok);
+			})
+		);
 
 		const ankiDescription = document.createElement('div');
         // use innerHTML for harcoded description
