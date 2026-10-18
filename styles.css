@@ -116,3 +116,27 @@ If your plugin does not need CSS, delete this file.
     background: var(--color-accent);
     color: var(--text-on-accent);
 }
+.question-options__count {
+    color: var(--text-muted);
+    font-size: var(--font-ui-small);
+}
+
+.question-option__header {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    font-weight: var(--font-semibold);
+    cursor: pointer;
+}
+
+.question-option__label {
+    margin-top: 0.5em;
+    font-size: var(--font-ui-smaller);
+    opacity: 0.8;
+}
+
+.question-option__input {
+    width: 100%;
+    resize: vertical;
+    font-family: inherit;
+}

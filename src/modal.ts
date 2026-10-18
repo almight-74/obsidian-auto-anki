@@ -140,9 +140,11 @@ class QuestionSetWithSelections {
         questions: CardInformation[],
         onChangeCallback: VoidFunction,
         selectAllOnInit?: boolean,
+        selectFirstOnInit?: boolean,
     ) {
-        this.questions = questions;
+        this.questions = [...questions];
         if (selectAllOnInit) this.selected = new Set([...Array(questions.length).keys()])
+        else if (selectFirstOnInit && questions.length > 0) this.selected = new Set([0]);
         else this.selected = new Set([]);
         
         this.renderFunc = onChangeCallback;
@@ -156,20 +158,36 @@ class QuestionSetWithSelections {
         selectAllButton.onclick = (e: MouseEvent) => { this.selectAll() };
         const deselectAllButton = convenienceButtons.createEl('button', { text: 'Deselect All' });
         deselectAllButton.onclick = (e: MouseEvent) => { this.deselectAll() };
+        convenienceButtons.createEl('span', {
+            cls: 'question-options__count',
+            text: `${this.selected.size} of ${this.questions.length} selected`,
+        });
 
         htmlList.appendChild(convenienceButtons);
 
         this.questions.forEach((q: CardInformation, idx: number) => {
             const htmlQuestion = createEl('li');
-            htmlQuestion.appendChild(createEl('h3', { text: q.q }));
-            htmlQuestion.appendChild(createEl('p', { text: q.a }));
-            if (this.selected.has(idx)) {
-                htmlQuestion.className = 'question-option --selected'
-            }
-            else {
-                htmlQuestion.className = 'question-option'
-            }
-            htmlQuestion.onclick = () => { this.toggleSelect(idx) };
+            htmlQuestion.className = this.selected.has(idx) ? 'question-option --selected' : 'question-option';
+
+            const header = htmlQuestion.createEl('label', { cls: 'question-option__header' });
+            const checkbox = header.createEl('input', { type: 'checkbox' });
+            checkbox.checked = this.selected.has(idx);
+            checkbox.onchange = () => { this.toggleSelect(idx) };
+            header.createSpan({ text: `Card ${idx + 1}` });
+
+            // editable in place; edits are kept without re-rendering so focus isn't lost
+            htmlQuestion.createEl('div', { cls: 'question-option__label', text: 'Question' });
+            const qInput = htmlQuestion.createEl('textarea', { cls: 'question-option__input' });
+            qInput.value = q.q;
+            qInput.rows = 2;
+            qInput.oninput = () => { this.questions[idx] = { ...this.questions[idx], q: qInput.value } };
+
+            htmlQuestion.createEl('div', { cls: 'question-option__label', text: 'Answer' });
+            const aInput = htmlQuestion.createEl('textarea', { cls: 'question-option__input' });
+            aInput.value = q.a;
+            aInput.rows = 2;
+            aInput.oninput = () => { this.questions[idx] = { ...this.questions[idx], a: aInput.value } };
+
             htmlList.appendChild(htmlQuestion);
         })
 
@@ -200,7 +218,9 @@ class QuestionSetWithSelections {
     }
 
     extractSelectedQuesions() {
-        return this.questions.filter((val, idx) => this.selected.has(idx));
+        return this.questions
+            .filter((val, idx) => this.selected.has(idx))
+            .filter((c) => c.q.trim() && c.a.trim());
     }
 }
 
@@ -238,14 +258,14 @@ export class ChoiceModal extends Modal {
                     if (i < set.length) question_choices.push(set[i]);
                 })
                 this.question_sets.push(
-                    new QuestionSetWithSelections(question_choices, this.renderContent)
+                    new QuestionSetWithSelections(question_choices, this.renderContent, false, true)
                 );
             }
         }
         else {
             this.n_sets = 1;
             this.question_sets.push(
-                new QuestionSetWithSelections(card_sets[0], this.renderContent)
+                new QuestionSetWithSelections(card_sets[0], this.renderContent, true)
             );
         }
     }
@@ -261,7 +281,7 @@ export class ChoiceModal extends Modal {
         else {
             contentEl.createEl('h1', { text: `Question Set No. ${this.curr_set+1}` });
         }
-        contentEl.createEl('p', { text: 'Pick one or more of the questions below you want to export to Anki.' });
+        contentEl.createEl('p', { text: 'Review the generated cards. Edit any question or answer, untick the ones you don\'t want, then confirm.' });
 
         // get card set to render
         const htmlList = this.question_sets[this.curr_set].renderHtmlList();
@@ -305,12 +325,16 @@ export class ChoiceModal extends Modal {
                         .setButtonText('Confirm Selection')
                         .setCta()
                         .onClick(async () => {
-                            this.close();
                             const allSelectedCards: CardInformation[] = [];
                             this.question_sets.forEach((set) => {
                                 const selectedCards = set.extractSelectedQuesions()
                                 allSelectedCards.push(...selectedCards);
                             })
+                            if (allSelectedCards.length === 0) {
+                                new Notice('No cards selected');
+                                return;
+                            }
+                            this.close();
                             this.onConfirm(allSelectedCards);
                         })
                 );
@@ -323,12 +347,16 @@ export class ChoiceModal extends Modal {
                     .setButtonText('Confirm Selection')
                     .setCta()
                     .onClick(async () => {
-                        this.close();
                         const allSelectedCards: CardInformation[] = [];
                         this.question_sets.forEach((set) => {
                             const selectedCards = set.extractSelectedQuesions()
                             allSelectedCards.push(...selectedCards);
                         })
+                        if (allSelectedCards.length === 0) {
+                            new Notice('No cards selected');
+                            return;
+                        }
+                        this.close();
                         this.onConfirm(allSelectedCards);
                     })
             );

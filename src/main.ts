@@ -311,13 +311,33 @@ export default class AutoAnkiPlugin extends Plugin {
 			}
 			else {
 				this.statusBar.doReset?.();
-				new Notice(`Inserted and synced ${report.added} card(s) to Anki`);
+				new Notice(`Created ${report.added} card(s) in Anki:\n${cards.slice(0, 10).map((c) => `• ${c.q}`).join('\n')}${cards.length > 10 ? '\n…' : ''}`, 8000);
 			}
 		}
 		catch (err) {
 			this.statusBar.doDisplayError?.();
 			new Notice(`Cards inserted, but sync failed: ${err.message}`);
 		}
+		await this.revealLines(file, range);
+	}
+
+	// opens the note and selects the given lines so new cards are visible
+	async revealLines(file: TFile, range: LineRange) {
+		let view = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (view?.file !== file) {
+			await this.app.workspace.getLeaf(false).openFile(file);
+			view = this.app.workspace.getActiveViewOfType(MarkdownView);
+		}
+		if (view == null || view.file !== file) return;
+		const editor = view.editor;
+		// give the editor a moment to pick up the change written to disk
+		window.setTimeout(() => {
+			if (range.to >= editor.lineCount()) return;
+			const from = { line: range.from, ch: 0 };
+			const to = { line: range.to, ch: editor.getLine(range.to).length };
+			editor.setSelection(from, to);
+			editor.scrollIntoView({ from, to }, true);
+		}, 200);
 	}
 	
 	async loadSettings() {
