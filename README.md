@@ -2,7 +2,7 @@
 
 Plugin for [Obsidian.md](https://obsidian.md/) that uses OpenAI's GPT LLM to automatically generate Flashcards for Anki.
 
-> The plugin **only works for desktop**.
+> The plugin **only works for desktop** and needs Obsidian 1.11.4 or newer.
 
 The plugin introduces two new "commands" into obsidian:
 - _Export Current File to Anki_
@@ -60,7 +60,7 @@ The following are required for the Plugin to work:
 2. Ensure that you have all the requirements in the [Plugin Requirements](#plugin-requirements)
 3. Go to the Plugin Settings (Settings > Community Plugins > Auto Anki) and make sure to set the following fields appropriately:
     - Anki Port (by default, this is `8765`)
-    - Anthropic or OpenAI API key (only for AI generation)
+    - Anthropic or OpenAI API key (only for AI generation). Keys are stored in Obsidian's keychain (Settings → Keychain), not in the plugin's `data.json`. Keys saved by older versions are moved there automatically.
 4. Enjoy!
 
 ## Feature Details

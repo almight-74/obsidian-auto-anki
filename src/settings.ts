@@ -41,12 +41,11 @@ export interface PluginSettings {
 	ankiConnectPort: number;
 	ankiDestinationDeck: string;
 	aiProvider: AiProvider;
-	anthropicApiKey: string | null;
-	anthropicApiKeyIdentifier: string;
+	// names of secrets in Obsidian's keychain (app.secretStorage), never the keys themselves
+	anthropicSecretId: string;
 	anthropicModel: string;
 	aiInsertIntoNote: boolean;
-	openAiApiKey: string | null;
-	openAiApiKeyIdentifier: string;
+	openAiSecretId: string;
 	sync: SyncSettings;
 	gptAdvancedOptions: GptAdvancedOptions;
 	questionGenerationDefaults: QuestionGenerationDefaults;
@@ -56,12 +55,10 @@ export const DEFAULT_SETTINGS: PluginSettings = {
 	ankiConnectPort: ANKI_CONNECT_DEFAULT_PORT,
 	ankiDestinationDeck: '',
 	aiProvider: 'anthropic',
-	anthropicApiKey: null,
-	anthropicApiKeyIdentifier: '',
+	anthropicSecretId: 'auto-anki-anthropic',
 	anthropicModel: 'claude-opus-5-5',
 	aiInsertIntoNote: true,
-	openAiApiKey: null,
-	openAiApiKeyIdentifier: '',
+	openAiSecretId: 'auto-anki-openai',
 	sync: {
 		basicSeparator: '::',
 		reversedSeparator: ':::',

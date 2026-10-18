@@ -6,6 +6,7 @@ import {
 	PluginSettingTab,
 	Setting,
 	Notice,
+	SecretComponent,
 	TFile,
 	setIcon,
 } from 'obsidian';
@@ -39,9 +40,11 @@ function mergeDefaults<T>(defaults: T, data: unknown): T {
 	return out as T;
 }
 
-function makeKeyIdentifier(value: string) {
-	return value.length >= 7 ? `${value.slice(0,3)}...${value.slice(-4)}` : 'xxxx';
-}
+// plaintext key fields from older versions, moved into the keychain on load
+const LEGACY_KEY_FIELDS = [
+	{ key: 'anthropicApiKey', identifier: 'anthropicApiKeyIdentifier', secretId: 'anthropicSecretId' },
+	{ key: 'openAiApiKey', identifier: 'openAiApiKeyIdentifier', secretId: 'openAiSecretId' },
+] as const;
 
 export default class AutoAnkiPlugin extends Plugin {
 	settings: PluginSettings;
@@ -230,14 +233,18 @@ export default class AutoAnkiPlugin extends Plugin {
 		new Notice(`Anki sync: ${parts.join(', ')}${errors}`, errors ? 10000 : 4000);
 	}
 
+	getSecret(id: string) {
+		return id ? this.app.secretStorage.getSecret(id) : null;
+	}
+
 	aiGenerator(): CardGenerator | null {
 		const s = this.settings;
 		if (s.aiProvider === 'anthropic') {
-			const key = s.anthropicApiKey;
+			const key = this.getSecret(s.anthropicSecretId);
 			if (!key) return null;
 			return (notes, nq, nsets) => convertNotesToFlashcardsWithClaude(key, s.anthropicModel, notes, nq, nsets);
 		}
-		const key = s.openAiApiKey;
+		const key = this.getSecret(s.openAiSecretId);
 		if (!key) return null;
 		return async (notes, nq, nsets) => {
 			if (!checkGpt(key)) return [];
@@ -316,8 +323,30 @@ export default class AutoAnkiPlugin extends Plugin {
 	async loadSettings() {
 		const data = (await this.loadData()) ?? {};
 		const { syncState, ...settings } = data;
+
+		let migrated = false;
+		for (const f of LEGACY_KEY_FIELDS) {
+			const value = settings[f.key];
+			if (typeof value === 'string' && value.length > 0) {
+				const secretId = settings[f.secretId] || DEFAULT_SETTINGS[f.secretId];
+				try {
+					this.app.secretStorage.setSecret(secretId, value);
+					settings[f.secretId] = secretId;
+				}
+				catch (err) {
+					// keep the plaintext key rather than lose it
+					new Notice(`auto-anki: could not move API key into the keychain: ${err.message}`);
+					continue;
+				}
+			}
+			if (f.key in settings) migrated = true;
+			delete settings[f.key];
+			delete settings[f.identifier];
+		}
+
 		this.settings = mergeDefaults(DEFAULT_SETTINGS, settings);
 		this.syncState = mergeDefaults(EMPTY_SYNC_STATE, syncState);
+		if (migrated) await this.saveAll();
 	}
 
 	async saveAll() {
@@ -481,17 +510,16 @@ class AutoAnkiSettingTab extends PluginSettingTab {
 		const anthropicDescription = new DocumentFragment();
 		const anthropicDescHtml = document.createElement('p');
 		// use innerHTML for harcoded description
-		anthropicDescHtml.innerHTML = 'The API key for your Anthropic account. Get one <a href="https://console.anthropic.com/settings/keys">here</a>.';
+		anthropicDescHtml.innerHTML = 'Pick or create a secret in Obsidian\'s keychain holding your Anthropic API key. Get a key <a href="https://console.anthropic.com/settings/keys">here</a>.';
 		anthropicDescription.appendChild(anthropicDescHtml);
 
 		new Setting(containerEl)
 			.setName('Anthropic API Key')
 			.setDesc(anthropicDescription)
-			.addText(textComponent => textComponent
-				.setPlaceholder(this.plugin.settings.anthropicApiKeyIdentifier ? `key entered: ${this.plugin.settings.anthropicApiKeyIdentifier}` : 'NO_KEY_ENTERED')
+			.addComponent(el => new SecretComponent(this.app, el)
+				.setValue(this.plugin.settings.anthropicSecretId)
 				.onChange(async (value) => {
-					this.plugin.settings.anthropicApiKey = value || null;
-					this.plugin.settings.anthropicApiKeyIdentifier = value ? makeKeyIdentifier(value) : '';
+					this.plugin.settings.anthropicSecretId = value ?? '';
 					await this.plugin.saveSettings();
 				})
 			);
@@ -522,18 +550,16 @@ class AutoAnkiSettingTab extends PluginSettingTab {
 		const openAiDescription = new DocumentFragment();
 		const openAiDescHtml = document.createElement('p');
         // use innerHTML for harcoded description
-		openAiDescHtml.innerHTML = 'The API Key associated with your OpenAI account, used for querying GPT. Go <a href="https://platform.openai.com/account/api-keys">here</a> to obtain one.';
+		openAiDescHtml.innerHTML = 'Pick or create a secret in Obsidian\'s keychain holding your OpenAI API key, used for querying GPT. Go <a href="https://platform.openai.com/account/api-keys">here</a> to obtain one.';
 		openAiDescription.appendChild(openAiDescHtml);
 
 		new Setting(containerEl)
 			.setName('OpenAI API Key')
 			.setDesc(openAiDescription)
-			.addText(textComponent => textComponent
-				.setPlaceholder(`key entered: ${this.plugin.settings.openAiApiKeyIdentifier}` ?? 'NO_KEY_ENTERED')
+			.addComponent(el => new SecretComponent(this.app, el)
+				.setValue(this.plugin.settings.openAiSecretId)
 				.onChange(async (value) => {
-					// this.plugin.settings.openAiApiKey = electronEncrypt(value);
-					this.plugin.settings.openAiApiKey = value;
-                    this.plugin.settings.openAiApiKeyIdentifier = makeKeyIdentifier(value);
+					this.plugin.settings.openAiSecretId = value ?? '';
 					await this.plugin.saveSettings();
 				})
 			);
