@@ -163,14 +163,25 @@ export function formatCardLine(
 }
 
 // rewrites only the deck/tag fields and id marker, leaving the user's text as written
-export function setMetaOnLine(raw: string, id: number, deck: string | null, tags: string[] | null) {
+export function setMetaOnLine(raw: string, id: number | null, deck: string | null, tags: string[] | null) {
     const cr = raw.endsWith('\r');
+    const idMatch = raw.replace(/\r$/, '').match(ID_MARKER_REGEX);
+    const keepId = id ?? (idMatch ? Number(idMatch[1]) : null);
     const line = raw
         .replace(/\r$/, '')
         .replace(ID_MARKER_REGEX, '')
         .replace(META_FIELD_REGEX, '')
         .replace(/\s+$/, '');
-    return `${line}${formatMeta(deck, tags)} ${formatIdMarker(id)}${cr ? '\r' : ''}`;
+    const marker = keepId != null ? ` ${formatIdMarker(keepId)}` : '';
+    return `${line}${formatMeta(deck, tags)}${marker}${cr ? '\r' : ''}`;
+}
+
+// sets the deck and adds tags on a card line, keeping its other text and id
+export function applyDeckAndTags(raw: string, lineIdx: number, opts: ParserOptions, deck: string | null, addTags: string[]) {
+    const card = parseCardLine(raw, lineIdx, opts);
+    if (!card) return raw;
+    const tags = [...new Set([...(card.tags ?? []), ...addTags])];
+    return setMetaOnLine(raw, null, deck ?? card.deck, tags.length > 0 ? tags : card.tags);
 }
 
 export function hasIdMarkers(content: string) {

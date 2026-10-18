@@ -21,7 +21,7 @@ import {
 	DEFAULT_SETTINGS,
 } from './settings';
 
-import { AnkiDeckModal, CardGenerator, ExportModal, HeadingPickerModal, NoteHeading } from './modal';
+import { AnkiDeckModal, CardGenerator, CardTarget, ExportModal, HeadingPickerModal, NoteHeading } from './modal';
 // import {
 //     electronEncrypt,
 //     electronDecrypt,
@@ -33,6 +33,8 @@ import { CardInformation, checkGpt, convertNotesToFlashcards } from './utils/gpt
 import { convertNotesToFlashcardsWithClaude } from './utils/claude';
 import { compactNotes } from './utils/text';
 import { cardFieldsExtension, wrapCardFields } from './editor';
+import { AnkiCache, CardFieldSuggest, SyncOptionsModal, noteDefaults } from './ui';
+import { applyDeckAndTags, parseCards } from './sync/parser';
 
 const FIELD_DISPLAY_LABELS: Record<FieldDisplay, string> = {
 	show: 'Show',
@@ -61,6 +63,7 @@ export default class AutoAnkiPlugin extends Plugin {
 	settings: PluginSettings;
 	syncState: SyncState;
 	syncEngine: SyncEngine;
+	ankiCache: AnkiCache;
 	statusBar: StatusBarElement;
 	statusBarIcon: HTMLElement;
 	autoSyncHandle: number | null = null;
@@ -109,6 +112,8 @@ export default class AutoAnkiPlugin extends Plugin {
 
 		this.addRibbonIcon('refresh-cw', 'Sync flashcards with Anki', () => this.runSync('vault'));
 
+		this.ankiCache = new AnkiCache(() => this.port());
+		this.registerEditorSuggest(new CardFieldSuggest(this.app, this.ankiCache));
 		this.registerEditorExtension(cardFieldsExtension(() => this.settings.fieldDisplay));
 		this.registerMarkdownPostProcessor((el) => wrapCardFields(el));
 		this.applyFieldDisplay();
@@ -139,7 +144,7 @@ export default class AutoAnkiPlugin extends Plugin {
 			checkCallback: (checking: boolean) => {
 				const view = this.app.workspace.getActiveViewOfType(MarkdownView);
 				if (view?.file == null) return false;
-				if (!checking) this.runSync('file', view);
+				if (!checking) this.syncWithDialog(view);
 				return true;
 			},
 		});
@@ -151,7 +156,7 @@ export default class AutoAnkiPlugin extends Plugin {
 				if (editor.getSelection().length === 0) return false;
 				if (!checking) {
 					const range = { from: editor.getCursor('from').line, to: editor.getCursor('to').line };
-					this.runSync('file', view, range);
+					this.syncWithDialog(view, range);
 				}
 				return true;
 			},
@@ -260,6 +265,47 @@ export default class AutoAnkiPlugin extends Plugin {
 		}
 	}
 
+	// asks for deck / tags first (unless turned off), writes them onto the cards, then syncs
+	async syncWithDialog(view: MarkdownView, range?: LineRange) {
+		const file = view.file;
+		if (!file) return;
+		if (!this.settings.syncDialog) return this.runSync('file', view, range);
+
+		await view.save();
+		const opts = { ...this.settings.sync };
+		let cards = parseCards(await this.app.vault.read(file), opts);
+		if (range) cards = cards.filter((c) => c.line >= range.from && c.line <= range.to);
+		const defaults = noteDefaults(this.app, file, this.settings.ankiDestinationDeck || 'Default');
+
+		new SyncOptionsModal(
+			this.app,
+			this.ankiCache,
+			{ total: cards.length, fresh: cards.filter((c) => c.id == null).length, scope: range ? 'selection' : 'note' },
+			defaults,
+			async (r) => {
+				const targets = r.applyToAll ? cards : cards.filter((c) => c.id == null);
+				if (targets.length > 0) {
+					await this.app.vault.process(file, (data) => {
+						const lines = data.split('\n');
+						for (const c of targets) {
+							if (lines[c.line] === c.raw) lines[c.line] = applyDeckAndTags(c.raw, c.line, opts, r.deck, r.tags);
+						}
+						return lines.join('\n');
+					});
+				}
+				await this.runSync('file', view, range);
+				// frontmatter last: it can shift line numbers the sync relies on
+				if (r.saveAsDefault) {
+					await this.app.fileManager.processFrontMatter(file, (fm) => {
+						fm['anki-deck'] = r.deck;
+						if (r.tags.length > 0) fm['anki-tags'] = r.tags;
+						else delete fm['anki-tags'];
+					});
+				}
+			},
+		).open();
+	}
+
 	async runSync(scope: 'file' | 'vault', view?: MarkdownView, range?: LineRange, quiet = false) {
 		this.statusBar.doDisplayRunning?.();
 		let report: SyncReport;
@@ -272,6 +318,8 @@ export default class AutoAnkiPlugin extends Plugin {
 			else {
 				report = await this.syncEngine.syncVault();
 			}
+			// new decks / tags may exist now
+			this.ankiCache.invalidate();
 		}
 		catch (err) {
 			this.statusBar.doDisplayError?.();
@@ -382,13 +430,14 @@ export default class AutoAnkiPlugin extends Plugin {
 		const file = view.file;
 		if (generate == null || file == null) return;
 
-		const onConfirm = (cards: CardInformation[]) => {
+		const defaults = noteDefaults(this.app, file, this.settings.ankiDestinationDeck || 'Default');
+		const onConfirm = (cards: CardInformation[], target?: CardTarget) => {
 			if (cards.length === 0) return;
 			if (this.settings.aiInsertIntoNote) {
-				this.insertCardsAndSync(file, cards, selection);
+				this.insertCardsAndSync(file, cards, selection, target);
 			}
 			else {
-				new AnkiDeckModal(this.app, this.port(), this.settings.ankiDestinationDeck, cards).open();
+				new AnkiDeckModal(this.app, this.port(), target?.deck ?? defaults.deck, cards).open();
 			}
 		};
 
@@ -400,6 +449,7 @@ export default class AutoAnkiPlugin extends Plugin {
 			generate,
 			onConfirm,
 			this.settings.generation,
+			{ cache: this.ankiCache, ...defaults },
 			numQuestions,
 			numAlternatives,
 		).open();
@@ -408,7 +458,7 @@ export default class AutoAnkiPlugin extends Plugin {
 	// writes generated cards into the note as `Q::A` lines, then syncs just those lines.
 	// Cards go to the end of the configured heading's section (created if missing),
 	// or right after the selection when no heading is set.
-	async insertCardsAndSync(file: TFile, cards: CardInformation[], selection: string | null) {
+	async insertCardsAndSync(file: TFile, cards: CardInformation[], selection: string | null, target?: CardTarget) {
 		const sep = this.settings.sync.basicSeparator;
 		const clean = (t: string) => t
 			.replace(/\r?\n/g, '<br>')
@@ -418,7 +468,7 @@ export default class AutoAnkiPlugin extends Plugin {
 		const cardLines = cards.map((c) => {
 			const extra = c.extra ? clean(c.extra) : '';
 			return `${clean(c.q)}${sep}${clean(c.a)}${extra ? ` {{extra::${extra}}}` : ''}`;
-		});
+		}).map((line, i) => target ? applyDeckAndTags(line, i, this.settings.sync, target.deck, target.tags) : line);
 		const heading = this.settings.aiHeading.trim();
 
 		let range: LineRange = { from: 0, to: 0 };
@@ -600,6 +650,17 @@ class AutoAnkiSettingTab extends PluginSettingTab {
 			);
 		
 		containerEl.createEl('h2', { text: 'Sync' });
+
+		new Setting(containerEl)
+			.setName('Ask for deck and tags when syncing a note')
+			.setDesc('"Sync current note" and "Sync selected cards" first show a deck / tag picker.')
+			.addToggle(t => t
+				.setValue(this.plugin.settings.syncDialog)
+				.onChange(async (value) => {
+					this.plugin.settings.syncDialog = value;
+					await this.plugin.saveSettings();
+				})
+			);
 
 		new Setting(containerEl)
 			.setName('Card fields in editor')

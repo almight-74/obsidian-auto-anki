@@ -183,3 +183,39 @@ body.aa-fields-hide .markdown-preview-view .aa-card-field {
     gap: 0.5em;
     cursor: pointer;
 }
+
+.aa-tag-box {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35em;
+    max-width: 22em;
+    justify-content: flex-end;
+}
+
+.aa-tag-chips {
+    display: contents;
+}
+
+.aa-tag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25em;
+    padding: 0.1em 0.55em;
+    border-radius: 1em;
+    background: var(--background-modifier-hover);
+    font-size: var(--font-ui-small);
+}
+
+.aa-tag-chip__remove {
+    cursor: pointer;
+    opacity: 0.6;
+}
+
+.aa-tag-chip__remove:hover {
+    opacity: 1;
+}
+
+.aa-picker-input {
+    min-width: 10em;
+}

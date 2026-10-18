@@ -1,5 +1,6 @@
 import { App, Modal, Notice, Setting } from 'obsidian';
 import { Conciseness, Difficulty, GenerationOptions } from './settings';
+import { AnkiCache, DeckTagPicker } from './ui';
 
 import { 
     checkAnkiAvailability,
@@ -24,7 +25,12 @@ export type CardGenerator = (
     numSets: number,
     options: GenerationOptions,
 ) => Promise<CardInformation[][]>;
-export type CardsConfirmedHandler = (cards: CardInformation[]) => void;
+export interface CardTarget {
+    deck: string;
+    tags: string[];
+}
+
+export type CardsConfirmedHandler = (cards: CardInformation[], target?: CardTarget) => void;
 
 export class ExportModal extends Modal {
     n_q: number;
@@ -46,6 +52,7 @@ export class ExportModal extends Modal {
         generate: CardGenerator,
         onConfirm: CardsConfirmedHandler,
         defaultOptions: GenerationOptions,
+        private target: { cache: AnkiCache; deck: string; tags: string[] },
         dafaultNumQuestions?: number,
         defaultNumAlternatives?: number,
     ) {
@@ -128,6 +135,8 @@ export class ExportModal extends Modal {
                 .onChange((value) => { this.options.extra = value })
             );
 
+        const picker = new DeckTagPicker(contentEl, this.target.cache, this.target.deck, this.target.tags);
+
         new Setting(contentEl)
             .addButton((btn) =>
                 btn
@@ -157,7 +166,7 @@ export class ExportModal extends Modal {
                         // SAMPLE_CARD_INFORMATION,
                         this.n_q,
                         this.n_alt > 0,
-                        this.onConfirm,
+                        (cards) => this.onConfirm(cards, { deck: picker.deck || this.target.deck, tags: picker.tags }),
                     ).open();
                 })
             );

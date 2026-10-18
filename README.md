@@ -40,6 +40,12 @@ After each sync, every card line shows its real Anki deck and tags (`{{deck::…
 
 List / quote prefixes (`- `, `1. `, `> `) are fine. Lines inside code blocks, `$$` math blocks and frontmatter are ignored. `::` inside `` `inline code` `` is ignored, but plain text like `std::vector` is read as a card, so wrap it in backticks.
 
+Choosing deck and tags:
+- _Sync current note_ / _Sync selected cards_ open a dialog: pick the deck (autocomplete from Anki, or type a new one) and add tags as chips (suggested from Anki). Apply to new cards only or to all cards in scope, and optionally save it as the note's default (`anki-deck` / `anki-tags` frontmatter). Turn the dialog off in settings for one-step syncing.
+- The AI generate dialog has the same deck / tag pickers.
+- While typing, `{{deck::` and `{{tag::` autocomplete from your Anki decks and tags.
+- Frontmatter `anki-tags: [tag1, tag2]` adds tags to every new card in the note.
+
 Commands:
 - _Sync current note with Anki_
 - _Sync selected cards with Anki_ (only the selected lines)

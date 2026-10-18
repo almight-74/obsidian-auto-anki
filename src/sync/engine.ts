@@ -16,6 +16,7 @@ import {
     parseCardLine,
     parseCards,
     setMetaOnLine,
+    splitTags,
 } from './parser';
 import {
     clozeHtmlToMd,
@@ -295,9 +296,12 @@ export class SyncEngine {
         return this.getSettings().defaultDeck || 'Default';
     }
 
-    private tagsFor(cardTags: string[] | null) {
+    // tags for a new note: plugin defaults + the note's anki-tags frontmatter + the line's own tags
+    private tagsFor(cardTags: string[] | null, file: TFile) {
         const defaults = this.getSettings().sync.tags.split(/[\s,]+/).filter((t) => t.length > 0);
-        return [...new Set([...defaults, ...(cardTags ?? [])])];
+        const fmTags = this.app.metadataCache.getFileCache(file)?.frontmatter?.['anki-tags'];
+        const noteTags = Array.isArray(fmTags) ? fmTags.map(String) : typeof fmTags === 'string' ? splitTags(fmTags) : [];
+        return [...new Set([...defaults, ...noteTags, ...(cardTags ?? [])])];
     }
 
     // note info plus the deck of its first card
@@ -414,7 +418,7 @@ export class SyncEngine {
         const toDelete: number[] = [];
 
         // 1. create new notes and journal their ids before touching the file
-        const addTags = toAdd.map((w) => this.tagsFor(w.tags));
+        const addTags = toAdd.map((w) => this.tagsFor(w.tags, file));
         const addResults = await ankiMulti<number>(port, toAdd.map((w, i) => ({
             action: 'addNote',
             params: {

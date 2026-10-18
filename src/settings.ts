@@ -56,6 +56,7 @@ export interface PluginSettings {
 	anthropicSecretId: string;
 	anthropicModel: string;
 	aiInsertIntoNote: boolean;
+	syncDialog: boolean;
 	aiHeading: string;
 	generation: GenerationOptions;
 	openAiSecretId: string;
@@ -72,6 +73,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
 	anthropicSecretId: 'auto-anki-anthropic',
 	anthropicModel: 'claude-opus-5-5',
 	aiInsertIntoNote: true,
+	syncDialog: true,
 	aiHeading: 'Flashcards',
 	generation: {
 		difficulty: 'medium',
