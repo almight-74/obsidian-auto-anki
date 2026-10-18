@@ -2,8 +2,8 @@
 	"id": "auto-anki",
 	"name": "Auto Anki",
 	"version": "0.2.1",
-	"minAppVersion": "0.15.0",
-	"description": "Using GPT to automate card creation for Spaced Repetiton in Anki",
+	"minAppVersion": "1.1.0",
+	"description": "Two-way sync of ::, ::: and ==cloze== flashcards with Anki, plus optional AI card generation with Claude or GPT",
 	"author": "ad2969",
 	"authorUrl": "https://github.com/ad2969/",
 	"isDesktopOnly": true

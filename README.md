@@ -18,10 +18,39 @@ The two new commands look like the following:
 
 ![command-palette-new-commands](media/command-palette-new-commands.png)
 
+## Two-way Sync (no AI needed)
+
+Write cards anywhere in a note, one per line:
+
+| Syntax | Anki note type |
+|---|---|
+| `Question::Answer` | Basic |
+| `Question:::Answer` | Basic (and reversed card) |
+| `The ==mitochondria== is the ==powerhouse==` | Cloze (one deletion per highlight) |
+
+List / quote prefixes (`- `, `1. `, `> `) are fine. Lines inside code blocks, `$$` math blocks and frontmatter are ignored. `::` inside `` `inline code` `` is ignored, but plain text like `std::vector` is read as a card, so wrap it in backticks.
+
+Commands:
+- _Sync current note with Anki_
+- _Sync selected cards with Anki_ (only the selected lines)
+- _Sync all flashcard notes with Anki_ (also on the ribbon icon; optional auto-sync interval in settings). Covers notes that already contain synced cards plus notes tagged with the "Vault sync tag" (default `#flashcards`).
+
+How sync works:
+- After the first sync each card line ends with an invisible `<!--anki:NOTE_ID-->` marker. Keep it on the line; it links the card to its Anki note.
+- Edit in Obsidian -> pushed to Anki. Edit in Anki -> written back to the note. Both edited -> conflict setting (newest edit wins by default).
+- Anki review history is never touched. Deleting a note in Anki re-creates it on the next sync. Changing `::` to `:::` (card type) replaces the note.
+- New note ids are saved to a journal before the note file is written, so if the file changes mid-sync or Obsidian closes, the next sync picks the id back up and doesn't create a duplicate.
+- Set `anki-deck: My Deck` in a note's frontmatter to choose its deck; otherwise the default deck from settings is used.
+- Bold, italics, inline code, `$math$` and `<br>` round-trip. Other formatting edited in Anki is reduced to plain text when pulled back. Images are not synced.
+
+## AI Card Generation (optional)
+
+_Generate cards with AI from current note_ / _from selection_ uses Claude (default, `claude-opus-5-5`; any Claude model id can be set) or OpenAI GPT. Pick the cards you want; they're inserted into the note as `Question::Answer` lines right after the selection (or at the end of the note) and synced, so they're tracked like hand-written cards. Turn off "Insert generated cards into note" to send them straight to Anki without tracking.
+
 ## Plugin Requirements
 
 The following are required for the Plugin to work:
-- An [OpenAI](https://openai.com/) Account and an [OpenAI API Key](https://platform.openai.com/account/api-keys)
+- For AI generation only: an [Anthropic API key](https://console.anthropic.com/settings/keys) or an [OpenAI API Key](https://platform.openai.com/account/api-keys)
 - The [Anki](https://apps.ankiweb.net/) program, installed locally
 - [Anki Connect](https://github.com/FooSoft/anki-connect), to expose an Anki API for Obsidian to make calls to
 
@@ -31,7 +60,7 @@ The following are required for the Plugin to work:
 2. Ensure that you have all the requirements in the [Plugin Requirements](#plugin-requirements)
 3. Go to the Plugin Settings (Settings > Community Plugins > Auto Anki) and make sure to set the following fields appropriately:
     - Anki Port (by default, this is `8765`)
-    - OpenAI API Key
+    - Anthropic or OpenAI API key (only for AI generation)
 4. Enjoy!
 
 ## Feature Details
