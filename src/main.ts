@@ -6,15 +6,18 @@ import {
 	PluginSettingTab,
 	Setting,
 	Notice,
+	TFile,
 	setIcon,
 } from 'obsidian';
 
 import {
+	AiProvider,
+	ConflictPolicy,
 	PluginSettings,
 	DEFAULT_SETTINGS,
 } from './settings';
 
-import { ExportModal } from './modal';
+import { AnkiDeckModal, CardGenerator, ExportModal } from './modal';
 // import {
 //     electronEncrypt,
 //     electronDecrypt,
@@ -22,18 +25,36 @@ import { ExportModal } from './modal';
 import { ANKI_CONNECT_DEFAULT_PORT } from './utils/anki';
 import { isNumeric } from './utils/validations';
 import { StatusBarElement } from './utils/cusom-types';
+import { CardInformation, checkGpt, convertNotesToFlashcards } from './utils/gpt';
+import { convertNotesToFlashcardsWithClaude } from './utils/claude';
+import { EMPTY_SYNC_STATE, LineRange, SyncEngine, SyncReport, SyncState } from './sync/engine';
+
+function mergeDefaults<T>(defaults: T, data: unknown): T {
+	if (typeof data !== 'object' || data == null) return structuredClone(defaults);
+	const out = structuredClone(defaults) as Record<string, unknown>;
+	Object.entries(data as Record<string, unknown>).forEach(([k, v]) => {
+		const d = out[k];
+		out[k] = (typeof d === 'object' && d != null && !Array.isArray(d)) ? mergeDefaults(d, v) : v;
+	});
+	return out as T;
+}
+
+function makeKeyIdentifier(value: string) {
+	return value.length >= 7 ? `${value.slice(0,3)}...${value.slice(-4)}` : 'xxxx';
+}
 
 export default class AutoAnkiPlugin extends Plugin {
 	settings: PluginSettings;
+	syncState: SyncState;
+	syncEngine: SyncEngine;
 	statusBar: StatusBarElement;
 	statusBarIcon: HTMLElement;
+	autoSyncHandle: number | null = null;
 	
 	async onload() {
 		await this.loadSettings();
 				
 		this.addSettingTab(new AutoAnkiSettingTab(this.app, this));
-        const defaults = this.settings.questionGenerationDefaults;
-        const { textSelection: defaultsTextSelection, file: defaultsFile } = defaults;
 
 		this.statusBar = this.addStatusBarItem();
 		this.statusBar.className = 'status-bar-auto-anki'
@@ -57,11 +78,58 @@ export default class AutoAnkiPlugin extends Plugin {
 		};
 		this.statusBar.doReset();
 
+		this.syncEngine = new SyncEngine(
+			this.app,
+			() => ({
+				port: this.port(),
+				defaultDeck: this.settings.ankiDestinationDeck,
+				sync: this.settings.sync,
+			}),
+			() => this.syncState,
+			() => this.saveAll(),
+		);
+
+		this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
+			if (file instanceof TFile) this.syncEngine.onRename(oldPath, file.path);
+		}));
+
+		this.addRibbonIcon('refresh-cw', 'Sync flashcards with Anki', () => this.runSync('vault'));
+
+		this.addCommand({
+			id: 'sync-current-file-with-anki',
+			name: 'Sync current note with Anki',
+			checkCallback: (checking: boolean) => {
+				const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+				if (view?.file == null) return false;
+				if (!checking) this.runSync('file', view);
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: 'sync-selection-with-anki',
+			name: 'Sync selected cards with Anki',
+			editorCheckCallback: (checking: boolean, editor: Editor, view: MarkdownView) => {
+				if (editor.getSelection().length === 0) return false;
+				if (!checking) {
+					const range = { from: editor.getCursor('from').line, to: editor.getCursor('to').line };
+					this.runSync('file', view, range);
+				}
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: 'sync-vault-with-anki',
+			name: 'Sync all flashcard notes with Anki',
+			callback: () => this.runSync('vault'),
+		});
+
 		this.addCommand({
 			id: 'export-current-file-to-anki',
-			name: 'Export Current File to Anki',
+			name: 'Generate cards with AI from current note',
 			checkCallback: (checking: boolean) => {
-				if (this.settings.openAiApiKey == null) {
+				if (this.aiGenerator() == null) {
 					return false;
 				}
 
@@ -75,21 +143,8 @@ export default class AutoAnkiPlugin extends Plugin {
 						new Notice('There is nothing in the file!');
 						return;
 					}
-
-					// const apiKey = electronDecrypt(this.settings.openAiApiKey);
-					const apiKey = this.settings.openAiApiKey;
-					const port = this.settings.ankiConnectPort || ANKI_CONNECT_DEFAULT_PORT;
-					new ExportModal(
-						this.app,
-						this.statusBar,
-						view.data,
-						apiKey,
-						port,
-						this.settings.ankiDestinationDeck,
-						this.settings.gptAdvancedOptions,
-						defaultsFile.numQuestions,
-						defaultsFile.numAlternatives,
-					).open();
+					const defaults = this.settings.questionGenerationDefaults.file;
+					this.openAiModal(view, view.data, null, defaults.numQuestions, defaults.numAlternatives);
 				}
 
 				return true;
@@ -98,11 +153,11 @@ export default class AutoAnkiPlugin extends Plugin {
 
 		this.addCommand({
 			id: 'export-text-selection-to-anki',
-			name: 'Export Highlighted Text to Anki',
+			name: 'Generate cards with AI from selection',
 			editorCheckCallback: (checking: boolean, editor: Editor, view: MarkdownView) => {
 				const currTextSelection = editor.getSelection();
 
-				if (this.settings.openAiApiKey == null) {
+				if (this.aiGenerator() == null) {
 					return false;
 				}
 
@@ -111,37 +166,166 @@ export default class AutoAnkiPlugin extends Plugin {
 						new Notice('No text was selected!');
 						return;
 					}
-
-					// const apiKey = electronDecrypt(this.settings.openAiApiKey);
-					const apiKey = this.settings.openAiApiKey;
-					const port = this.settings.ankiConnectPort || ANKI_CONNECT_DEFAULT_PORT;
-					new ExportModal(
-						this.app,
-						this.statusBar,
-						currTextSelection,
-						apiKey,
-						port,
-						this.settings.ankiDestinationDeck,
-						this.settings.gptAdvancedOptions,
-						defaultsTextSelection.numQuestions,
-						defaultsTextSelection.numAlternatives,
-					).open();
+					const defaults = this.settings.questionGenerationDefaults.textSelection;
+					this.openAiModal(view, currTextSelection, currTextSelection, defaults.numQuestions, defaults.numAlternatives);
 				}
 
 				return true;
 			},
 		});
+
+		this.setupAutoSync();
 	}
 	
 	onunload() {
 	}
+
+	port() {
+		return this.settings.ankiConnectPort || ANKI_CONNECT_DEFAULT_PORT;
+	}
+
+	setupAutoSync() {
+		if (this.autoSyncHandle != null) window.clearInterval(this.autoSyncHandle);
+		this.autoSyncHandle = null;
+		const minutes = this.settings.sync.autoSyncMinutes;
+		if (minutes > 0) {
+			this.autoSyncHandle = window.setInterval(() => {
+				if (!this.syncEngine.isBusy) this.runSync('vault', undefined, undefined, true);
+			}, minutes * 60 * 1000);
+			this.registerInterval(this.autoSyncHandle);
+		}
+	}
+
+	async runSync(scope: 'file' | 'vault', view?: MarkdownView, range?: LineRange, quiet = false) {
+		this.statusBar.doDisplayRunning?.();
+		let report: SyncReport;
+		try {
+			if (scope === 'file' && view?.file) {
+				// flush unsaved editor changes so the sync reads what's on screen
+				await view.save();
+				report = await this.syncEngine.syncFile(view.file, range);
+			}
+			else {
+				report = await this.syncEngine.syncVault();
+			}
+		}
+		catch (err) {
+			this.statusBar.doDisplayError?.();
+			new Notice(`Anki sync failed: ${err.message}`);
+			return;
+		}
+
+		if (report.errors.length > 0) this.statusBar.doDisplayError?.();
+		else this.statusBar.doReset?.();
+
+		const changed = report.added + report.updated + report.pulled + report.deleted;
+		if (quiet && changed === 0 && report.errors.length === 0) return;
+		const parts = [
+			`${report.added} added`,
+			`${report.updated} updated in Anki`,
+			`${report.pulled} updated from Anki`,
+		];
+		if (report.deleted > 0) parts.push(`${report.deleted} deleted`);
+		const errors = report.errors.length > 0 ? `\n\nErrors:\n${report.errors.slice(0, 5).join('\n')}` : '';
+		new Notice(`Anki sync: ${parts.join(', ')}${errors}`, errors ? 10000 : 4000);
+	}
+
+	aiGenerator(): CardGenerator | null {
+		const s = this.settings;
+		if (s.aiProvider === 'anthropic') {
+			const key = s.anthropicApiKey;
+			if (!key) return null;
+			return (notes, nq, nsets) => convertNotesToFlashcardsWithClaude(key, s.anthropicModel, notes, nq, nsets);
+		}
+		const key = s.openAiApiKey;
+		if (!key) return null;
+		return async (notes, nq, nsets) => {
+			if (!checkGpt(key)) return [];
+			return convertNotesToFlashcards(key, notes, nq, nsets, s.gptAdvancedOptions);
+		};
+	}
+
+	openAiModal(view: MarkdownView, data: string, selection: string | null, numQuestions: number, numAlternatives: number) {
+		const generate = this.aiGenerator();
+		const file = view.file;
+		if (generate == null || file == null) return;
+
+		const onConfirm = (cards: CardInformation[]) => {
+			if (cards.length === 0) return;
+			if (this.settings.aiInsertIntoNote) {
+				this.insertCardsAndSync(file, cards, selection);
+			}
+			else {
+				new AnkiDeckModal(this.app, this.port(), this.settings.ankiDestinationDeck, cards).open();
+			}
+		};
+
+		new ExportModal(
+			this.app,
+			this.statusBar,
+			data,
+			this.port(),
+			generate,
+			onConfirm,
+			numQuestions,
+			numAlternatives,
+		).open();
+	}
+
+	// writes generated cards into the note as `Q::A` lines, then syncs just those lines
+	async insertCardsAndSync(file: TFile, cards: CardInformation[], selection: string | null) {
+		const sep = this.settings.sync.basicSeparator;
+		const clean = (t: string) => t.replace(/\r?\n/g, '<br>').split(sep).join(':').trim();
+		const cardLines = cards.map((c) => `${clean(c.q)}${sep}${clean(c.a)}`);
+
+		let range: LineRange = { from: 0, to: 0 };
+		await this.app.vault.process(file, (data) => {
+			let insertAt = data.length;
+			if (selection) {
+				const idx = data.indexOf(selection);
+				if (idx >= 0) {
+					const lineEnd = data.indexOf('\n', idx + selection.length);
+					insertAt = lineEnd < 0 ? data.length : lineEnd;
+				}
+			}
+			const before = data.slice(0, insertAt);
+			const block = `${before.endsWith('\n') || before.length === 0 ? '' : '\n'}\n${cardLines.join('\n')}\n`;
+			const from = (before + block).split('\n').length - 1 - cardLines.length;
+			range = { from, to: from + cardLines.length - 1 };
+			return before + block + data.slice(insertAt);
+		});
+
+		this.statusBar.doDisplayRunning?.();
+		try {
+			const report = await this.syncEngine.syncFile(file, range);
+			if (report.errors.length > 0) {
+				this.statusBar.doDisplayError?.();
+				new Notice(`Cards inserted, but sync had errors:\n${report.errors.slice(0, 5).join('\n')}`, 10000);
+			}
+			else {
+				this.statusBar.doReset?.();
+				new Notice(`Inserted and synced ${report.added} card(s) to Anki`);
+			}
+		}
+		catch (err) {
+			this.statusBar.doDisplayError?.();
+			new Notice(`Cards inserted, but sync failed: ${err.message}`);
+		}
+	}
 	
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const data = (await this.loadData()) ?? {};
+		const { syncState, ...settings } = data;
+		this.settings = mergeDefaults(DEFAULT_SETTINGS, settings);
+		this.syncState = mergeDefaults(EMPTY_SYNC_STATE, syncState);
+	}
+
+	async saveAll() {
+		await this.saveData({ ...this.settings, syncState: this.syncState });
 	}
 	
 	async saveSettings() {
-		await this.saveData(this.settings);
+		await this.saveAll();
 	}
 }
 
@@ -161,8 +345,16 @@ class AutoAnkiSettingTab extends PluginSettingTab {
 
 		const ankiDescription = document.createElement('div');
         // use innerHTML for harcoded description
-		ankiDescription.innerHTML = '<p><a href="https://apps.ankiweb.net/">Anki</a> is an open-source flashcard program that is popular for spaced repetition. This plugin has only been tested on desktop, and requires <a href="https://foosoft.net/projects/anki-connect/">Anki Connect</a> to be installed alongside the main Anki program.</p><p>Enabling this plugin will add commands to automatically generate Question-Answer-style flashcards into the Anki system using OpenAI\'s AI models.</p><p>For information on usage, see <a href="https://github.com/ad2969/obsidian-auto-anki#readme">the instructions</a> online.</p>';
+		ankiDescription.innerHTML = '<p><a href="https://apps.ankiweb.net/">Anki</a> is an open-source flashcard program that is popular for spaced repetition. This plugin has only been tested on desktop, and requires <a href="https://foosoft.net/projects/anki-connect/">Anki Connect</a> to be installed alongside the main Anki program.</p><p>Enabling this plugin adds commands to sync flashcards written in your notes with Anki in both directions, and to optionally generate new flashcards with Claude or OpenAI\'s GPT models.</p><p>For information on usage, see <a href="https://github.com/ad2969/obsidian-auto-anki#readme">the instructions</a> online.</p>';
         containerEl.appendChild(ankiDescription)
+
+		const syncHelp = containerEl.createEl('div');
+		syncHelp.createEl('p', { text: 'Write cards anywhere in a note and run "Sync current note with Anki" or "Sync selected cards with Anki":' });
+		const syncHelpList = syncHelp.createEl('ul');
+		syncHelpList.createEl('li', { text: 'Question::Answer - basic card' });
+		syncHelpList.createEl('li', { text: 'Question:::Answer - basic card plus reversed card' });
+		syncHelpList.createEl('li', { text: 'A line with ==highlighted== words - cloze card' });
+		syncHelp.createEl('p', { text: 'Synced cards get an invisible <!--anki:ID--> marker. Edits on either side sync both ways. Set "anki-deck" in a note\'s frontmatter to override the deck.' });
 		
 		new Setting(containerEl)
 			.setName('Anki Port')
@@ -176,6 +368,157 @@ class AutoAnkiSettingTab extends PluginSettingTab {
 				})
 			);
 		
+		containerEl.createEl('h2', { text: 'Sync' });
+
+		new Setting(containerEl)
+			.setName('Tags')
+			.setDesc('Tags added to new Anki notes (space or comma separated).')
+			.addText(t => t
+				.setValue(this.plugin.settings.sync.tags)
+				.onChange(async (value) => {
+					this.plugin.settings.sync.tags = value;
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Conflict resolution')
+			.setDesc('When the same card was edited in both Obsidian and Anki since the last sync.')
+			.addDropdown(d => d
+				.addOption('newest', 'Newest edit wins')
+				.addOption('obsidian', 'Obsidian wins')
+				.addOption('anki', 'Anki wins')
+				.setValue(this.plugin.settings.sync.conflictPolicy)
+				.onChange(async (value) => {
+					this.plugin.settings.sync.conflictPolicy = value as ConflictPolicy;
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Vault sync tag')
+			.setDesc('"Sync all flashcard notes" syncs notes that already contain synced cards, plus notes with this tag. Leave empty to only use already-synced notes.')
+			.addText(t => t
+				.setPlaceholder('flashcards')
+				.setValue(this.plugin.settings.sync.vaultSyncTag)
+				.onChange(async (value) => {
+					this.plugin.settings.sync.vaultSyncTag = value.trim();
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Delete Anki notes removed from Obsidian')
+			.setDesc('During "Sync all flashcard notes", delete Anki notes whose card line no longer exists anywhere in the vault. Off = the note is kept in Anki and just stops syncing.')
+			.addToggle(t => t
+				.setValue(this.plugin.settings.sync.deleteRemovedNotes)
+				.onChange(async (value) => {
+					this.plugin.settings.sync.deleteRemovedNotes = value;
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Auto sync interval (minutes)')
+			.setDesc('Run "Sync all flashcard notes" periodically. 0 = off.')
+			.addText(t => t
+				.setValue(String(this.plugin.settings.sync.autoSyncMinutes))
+				.onChange(async (value) => {
+					if (value !== '' && !isNumeric(value)) {
+						new Notice('The value you entered is not a number value');
+						return;
+					}
+					this.plugin.settings.sync.autoSyncMinutes = Math.max(0, Number(value));
+					await this.plugin.saveSettings();
+					this.plugin.setupAutoSync();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Highlights as cloze cards')
+			.setDesc('Turn lines containing ==highlights== into cloze cards.')
+			.addToggle(t => t
+				.setValue(this.plugin.settings.sync.clozeHighlights)
+				.onChange(async (value) => {
+					this.plugin.settings.sync.clozeHighlights = value;
+					await this.plugin.saveSettings();
+				})
+			);
+
+		const textSetting = (name: string, desc: string, key: 'basicSeparator' | 'reversedSeparator' | 'basicModel' | 'reversedModel' | 'clozeModel') => {
+			new Setting(containerEl)
+				.setName(name)
+				.setDesc(desc)
+				.addText(t => t
+					.setPlaceholder(DEFAULT_SETTINGS.sync[key])
+					.setValue(this.plugin.settings.sync[key])
+					.onChange(async (value) => {
+						this.plugin.settings.sync[key] = value || DEFAULT_SETTINGS.sync[key];
+						await this.plugin.saveSettings();
+					})
+				);
+		};
+		textSetting('Basic separator', 'Separator between question and answer.', 'basicSeparator');
+		textSetting('Reversed separator', 'Separator for cards that also get a reversed card.', 'reversedSeparator');
+		textSetting('Basic note type', 'Anki note type for basic cards (first field = question, second = answer).', 'basicModel');
+		textSetting('Reversed note type', 'Anki note type for reversed cards.', 'reversedModel');
+		textSetting('Cloze note type', 'Anki note type for cloze cards (first field = text).', 'clozeModel');
+
+		containerEl.createEl('h2', { text: 'AI card generation' });
+
+		new Setting(containerEl)
+			.setName('AI provider')
+			.addDropdown(d => d
+				.addOption('anthropic', 'Claude (Anthropic)')
+				.addOption('openai', 'OpenAI GPT')
+				.setValue(this.plugin.settings.aiProvider)
+				.onChange(async (value) => {
+					this.plugin.settings.aiProvider = value as AiProvider;
+					await this.plugin.saveSettings();
+				})
+			);
+
+		const anthropicDescription = new DocumentFragment();
+		const anthropicDescHtml = document.createElement('p');
+		// use innerHTML for harcoded description
+		anthropicDescHtml.innerHTML = 'The API key for your Anthropic account. Get one <a href="https://console.anthropic.com/settings/keys">here</a>.';
+		anthropicDescription.appendChild(anthropicDescHtml);
+
+		new Setting(containerEl)
+			.setName('Anthropic API Key')
+			.setDesc(anthropicDescription)
+			.addText(textComponent => textComponent
+				.setPlaceholder(this.plugin.settings.anthropicApiKeyIdentifier ? `key entered: ${this.plugin.settings.anthropicApiKeyIdentifier}` : 'NO_KEY_ENTERED')
+				.onChange(async (value) => {
+					this.plugin.settings.anthropicApiKey = value || null;
+					this.plugin.settings.anthropicApiKeyIdentifier = value ? makeKeyIdentifier(value) : '';
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Claude model')
+			.setDesc('Model id used for generation, e.g. claude-opus-5-5, claude-sonnet-5-5 or claude-haiku-5-5 (cheapest).')
+			.addText(t => t
+				.setPlaceholder(DEFAULT_SETTINGS.anthropicModel)
+				.setValue(this.plugin.settings.anthropicModel)
+				.onChange(async (value) => {
+					this.plugin.settings.anthropicModel = value.trim() || DEFAULT_SETTINGS.anthropicModel;
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Insert generated cards into note')
+			.setDesc('On: chosen cards are written into the note as Question::Answer lines and synced (fully tracked). Off: sent straight to Anki without tracking.')
+			.addToggle(t => t
+				.setValue(this.plugin.settings.aiInsertIntoNote)
+				.onChange(async (value) => {
+					this.plugin.settings.aiInsertIntoNote = value;
+					await this.plugin.saveSettings();
+				})
+			);
+
 		const openAiDescription = new DocumentFragment();
 		const openAiDescHtml = document.createElement('p');
         // use innerHTML for harcoded description
@@ -190,11 +533,7 @@ class AutoAnkiSettingTab extends PluginSettingTab {
 				.onChange(async (value) => {
 					// this.plugin.settings.openAiApiKey = electronEncrypt(value);
 					this.plugin.settings.openAiApiKey = value;
-                    let identifier = 'xxxx';
-                    if (value.length >= 7) {
-                        identifier = `${value.slice(0,3)}...${value.slice(-4)}`
-                    }
-                    this.plugin.settings.openAiApiKeyIdentifier = identifier;
+                    this.plugin.settings.openAiApiKeyIdentifier = makeKeyIdentifier(value);
 					await this.plugin.saveSettings();
 				})
 			);

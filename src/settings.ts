@@ -20,11 +20,34 @@ export interface QuestionGenerationDefaults {
 	},
 }
 
+export type AiProvider = 'anthropic' | 'openai';
+export type ConflictPolicy = 'newest' | 'obsidian' | 'anki';
+
+export interface SyncSettings {
+	basicSeparator: string;
+	reversedSeparator: string;
+	clozeHighlights: boolean;
+	basicModel: string;
+	reversedModel: string;
+	clozeModel: string;
+	tags: string;
+	conflictPolicy: ConflictPolicy;
+	deleteRemovedNotes: boolean;
+	vaultSyncTag: string;
+	autoSyncMinutes: number;
+}
+
 export interface PluginSettings {
 	ankiConnectPort: number;
 	ankiDestinationDeck: string;
+	aiProvider: AiProvider;
+	anthropicApiKey: string | null;
+	anthropicApiKeyIdentifier: string;
+	anthropicModel: string;
+	aiInsertIntoNote: boolean;
 	openAiApiKey: string | null;
 	openAiApiKeyIdentifier: string;
+	sync: SyncSettings;
 	gptAdvancedOptions: GptAdvancedOptions;
 	questionGenerationDefaults: QuestionGenerationDefaults;
 }
@@ -32,8 +55,26 @@ export interface PluginSettings {
 export const DEFAULT_SETTINGS: PluginSettings = {
 	ankiConnectPort: ANKI_CONNECT_DEFAULT_PORT,
 	ankiDestinationDeck: '',
+	aiProvider: 'anthropic',
+	anthropicApiKey: null,
+	anthropicApiKeyIdentifier: '',
+	anthropicModel: 'claude-opus-5-5',
+	aiInsertIntoNote: true,
 	openAiApiKey: null,
 	openAiApiKeyIdentifier: '',
+	sync: {
+		basicSeparator: '::',
+		reversedSeparator: ':::',
+		clozeHighlights: true,
+		basicModel: 'Basic',
+		reversedModel: 'Basic (and reversed card)',
+		clozeModel: 'Cloze',
+		tags: 'obsidian',
+		conflictPolicy: 'newest',
+		deleteRemovedNotes: false,
+		vaultSyncTag: 'flashcards',
+		autoSyncMinutes: 0,
+	},
 	gptAdvancedOptions: {
 		temperature: 1,
 		top_p: 1.0,

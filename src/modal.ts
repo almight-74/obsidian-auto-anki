@@ -1,5 +1,4 @@
 import { App, Modal, Notice, Setting } from 'obsidian';
-import { GptAdvancedOptions } from './settings';
 
 import { 
     checkAnkiAvailability,
@@ -7,7 +6,7 @@ import {
     exportToAnki,
     getAnkiDecks,
 } from './utils/anki';
-import { CardInformation, checkGpt, convertNotesToFlashcards } from './utils/gpt';
+import { CardInformation } from './utils/gpt';
 import { StatusBarElement } from './utils/cusom-types';
 
 // import { SAMPLE_CARD_INFORMATION } from 'sample/sample_card_information';
@@ -17,36 +16,37 @@ function checkValidNumGreaterThanZero(text: string|number, inclusiveZero?: boole
     if (isNaN(+text)) return false;
     return inclusiveZero ? +text >= 0 : +text > 0;
 }
+
+export type CardGenerator = (notes: string, numQuestions: number, numSets: number) => Promise<CardInformation[][]>;
+export type CardsConfirmedHandler = (cards: CardInformation[]) => void;
+
 export class ExportModal extends Modal {
     n_q: number;
     n_q_valid: boolean;
     n_alt: number;
     n_alt_valid: boolean;
     data: string;
-    apiKey: string;
     port: number;
-    deck: string;
-    gptAdvancedOptions: GptAdvancedOptions;
+    generate: CardGenerator;
+    onConfirm: CardsConfirmedHandler;
     statusBar: StatusBarElement;
     
     constructor(
         app: App,
         statusBar: StatusBarElement,
         data: string,
-        openAiApiKey: string,
         ankiConnectPort: number,
-        ankiDestinationDeck: string,
-        gptAdvancedOptions: GptAdvancedOptions,
+        generate: CardGenerator,
+        onConfirm: CardsConfirmedHandler,
         dafaultNumQuestions?: number,
         defaultNumAlternatives?: number,
     ) {
         super(app);
         this.statusBar = statusBar;
         this.data = data;
-        this.apiKey = openAiApiKey;
         this.port = ankiConnectPort;
-        this.deck = ankiDestinationDeck;
-        this.gptAdvancedOptions = gptAdvancedOptions;
+        this.generate = generate;
+        this.onConfirm = onConfirm;
 
         this.n_q = dafaultNumQuestions ?? 5;
         this.n_q_valid = checkValidNumGreaterThanZero(this.n_q);
@@ -103,17 +103,11 @@ export class ExportModal extends Modal {
                     }
                     this.close();
 
-                    let isRequestValid = false;
-                    isRequestValid = checkGpt(this.apiKey);
-
-                    if (!isRequestValid) return;
                     if (this.statusBar.doDisplayRunning) this.statusBar.doDisplayRunning();
-                    const card_sets: Array<CardInformation[]> = await convertNotesToFlashcards(
-                        this.apiKey,
+                    const card_sets: Array<CardInformation[]> = await this.generate(
                         this.data,
                         this.n_q,
                         this.n_alt+1,
-                        this.gptAdvancedOptions,
                     );
                     if (this.statusBar.doReset) this.statusBar.doReset();
 
@@ -123,10 +117,9 @@ export class ExportModal extends Modal {
                         this.app,
                         card_sets,
                         // SAMPLE_CARD_INFORMATION,
-                        this.port,
-                        this.deck,
                         this.n_q,
                         this.n_alt > 0,
+                        this.onConfirm,
                     ).open();
                 })
             );
@@ -215,25 +208,22 @@ export class ChoiceModal extends Modal {
     card_sets: Array<CardInformation[]>;
     question_sets: QuestionSetWithSelections[];
     n_sets: number;
-    port: number;
-    deck: string;
+    onConfirm: CardsConfirmedHandler;
 
     curr_set: number;
     
     constructor(
         app: App,
         card_sets: Array<CardInformation[]>,
-        port: number,
-        deck: string,
         n_q: number,
         has_alternatives: boolean,
+        onConfirm: CardsConfirmedHandler,
     ) {
         super(app);
         this.renderContent  = this.renderContent.bind(this);
 
         this.card_sets = card_sets;
-        this.port = port;
-        this.deck = deck;
+        this.onConfirm = onConfirm;
 
         // create question sets
         this.curr_set = 0;
@@ -321,12 +311,7 @@ export class ChoiceModal extends Modal {
                                 const selectedCards = set.extractSelectedQuesions()
                                 allSelectedCards.push(...selectedCards);
                             })
-                            new AnkiDeckModal(
-                                this.app,
-                                this.port,
-                                this.deck,
-                                allSelectedCards,
-                            ).open();
+                            this.onConfirm(allSelectedCards);
                         })
                 );
             }
@@ -344,12 +329,7 @@ export class ChoiceModal extends Modal {
                             const selectedCards = set.extractSelectedQuesions()
                             allSelectedCards.push(...selectedCards);
                         })
-                        new AnkiDeckModal(
-                            this.app,
-                            this.port,
-                            this.deck,
-                            allSelectedCards,
-                        ).open();
+                        this.onConfirm(allSelectedCards);
                     })
             );
         }
