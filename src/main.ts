@@ -41,7 +41,7 @@ const FIELD_DISPLAY_LABELS: Record<FieldDisplay, string> = {
 	dim: 'Dim',
 	hide: 'Hide (shown on the line being edited)',
 };
-import { EMPTY_SYNC_STATE, LineRange, SyncEngine, SyncReport, SyncState } from './sync/engine';
+import { EMPTY_SYNC_STATE, LineRange, SyncEngine, SyncReport, SyncState, countLegacyRecords } from './sync/engine';
 
 function mergeDefaults<T>(defaults: T, data: unknown): T {
 	if (typeof data !== 'object' || data == null) return structuredClone(defaults);
@@ -160,6 +160,20 @@ export default class AutoAnkiPlugin extends Plugin {
 				}
 				return true;
 			},
+		});
+
+		this.addCommand({
+			id: 'upgrade-older-cards',
+			name: 'Update older cards to the latest format',
+			callback: () => this.runSync('vault'),
+		});
+
+		// cards synced by an older version get deck / tag fields on the next vault sync
+		this.app.workspace.onLayoutReady(() => {
+			const legacy = countLegacyRecords(this.syncState);
+			if (legacy > 0) {
+				new Notice(`auto-anki: ${legacy} card(s) were synced by an older version. With Anki open, run "Update older cards to the latest format" to add their deck and tags.`, 15000);
+			}
 		});
 
 		this.addCommand({
@@ -330,7 +344,7 @@ export default class AutoAnkiPlugin extends Plugin {
 		if (report.errors.length > 0) this.statusBar.doDisplayError?.();
 		else this.statusBar.doReset?.();
 
-		const changed = report.added + report.updated + report.pulled + report.deleted;
+		const changed = report.added + report.updated + report.pulled + report.deleted + report.upgraded;
 		if (quiet && changed === 0 && report.errors.length === 0) return;
 		const parts = [
 			`${report.added} added`,
@@ -338,6 +352,7 @@ export default class AutoAnkiPlugin extends Plugin {
 			`${report.pulled} updated from Anki`,
 		];
 		if (report.deleted > 0) parts.push(`${report.deleted} deleted`);
+		if (report.upgraded > 0) parts.push(`${report.upgraded} older card(s) upgraded`);
 		const errors = report.errors.length > 0 ? `\n\nErrors:\n${report.errors.slice(0, 5).join('\n')}` : '';
 		new Notice(`Anki sync: ${parts.join(', ')}${errors}`, errors ? 10000 : 4000);
 	}

@@ -30,6 +30,13 @@ export interface NoteSyncRecord {
     file: string;
     obsHash: string;   // hash of the fields as generated from Obsidian at last sync
     ankiHash: string;  // hash of the fields as stored in Anki at last sync
+    v?: number;        // record format; missing = created before deck/tag sync
+}
+
+export const RECORD_VERSION = 2;
+
+export function countLegacyRecords(state: SyncState) {
+    return Object.values(state.notes).filter((r) => (r.v ?? 1) < RECORD_VERSION).length;
 }
 
 // Ids returned by Anki that have not been written into a file yet. Persisted
@@ -53,6 +60,7 @@ export interface SyncReport {
     pulled: number;
     deleted: number;
     unchanged: number;
+    upgraded: number;   // cards from older versions brought to the current format
     errors: string[];
     seenIds: Set<number>;
 }
@@ -105,7 +113,7 @@ function ankiHashOf(s: AnkiNoteState) {
 }
 
 function emptyReport(): SyncReport {
-    return { added: 0, updated: 0, pulled: 0, deleted: 0, unchanged: 0, errors: [], seenIds: new Set() };
+    return { added: 0, updated: 0, pulled: 0, deleted: 0, unchanged: 0, upgraded: 0, errors: [], seenIds: new Set() };
 }
 
 function ankiFieldValues(info: AnkiNoteInfo) {
@@ -163,6 +171,7 @@ export class SyncEngine {
                 total.updated += r.updated;
                 total.pulled += r.pulled;
                 total.unchanged += r.unchanged;
+                total.upgraded += r.upgraded;
                 total.errors.push(...r.errors.map((e) => `${file.path}: ${e}`));
                 r.seenIds.forEach((id) => total.seenIds.add(id));
                 if (r.errors.length > 0) hadFileErrors = true;
@@ -383,6 +392,11 @@ export class SyncEngine {
                 continue;
             }
             const { info } = current;
+            // a synced line without {{deck::}} (older version, or field removed) keeps
+            // the deck the card has in Anki instead of being moved back
+            if (w.card.deck == null) {
+                Object.assign(w, await this.buildFields(w.card, current.deck));
+            }
             if (info.modelName !== w.model) {
                 // card type changed (e.g. :: -> :::); notes can't change type in place
                 w.replaces = w.id;
@@ -394,6 +408,9 @@ export class SyncEngine {
             report.seenIds.add(w.id);
             const record = state.notes[w.id];
             const ankiValues = ankiFieldValues(info);
+            const legacy = record != null && (record.v ?? 1) < RECORD_VERSION;
+
+
             const sameContent = Object.entries(w.fields).every(([k, v]) => ankiValues[k] === v)
                 && w.deck === current.deck
                 && (w.tags == null || sortedTags(w.tags) === sortedTags(info.tags));
@@ -402,14 +419,21 @@ export class SyncEngine {
             if (sameContent) side = 'none';
             else if (!record) side = this.resolveConflict(sync.conflictPolicy, file, info);
             else {
-                const obsChanged = record.obsHash !== w.obsHash;
-                const ankiChanged = record.ankiHash !== ankiHashOf(current);
+                // older records hashed fields only (no deck/tags, no empty extra field)
+                const nonEmpty = Object.fromEntries(Object.entries(w.fields).filter(([, v]) => v !== ''));
+                const obsChanged = legacy
+                    ? record.obsHash !== hashFields(w.model, nonEmpty)
+                    : record.obsHash !== w.obsHash;
+                const ankiChanged = legacy
+                    ? record.ankiHash !== hashFields(info.modelName, ankiValues)
+                    : record.ankiHash !== ankiHashOf(current);
                 if (!obsChanged && !ankiChanged) side = 'none';
                 else if (obsChanged && !ankiChanged) side = 'obsidian';
                 else if (!obsChanged && ankiChanged) side = 'anki';
                 else side = this.resolveConflict(sync.conflictPolicy, file, info);
             }
 
+            if (legacy) report.upgraded++;
             if (side === 'obsidian') toUpdate.push({ w, current });
             else if (side === 'anki') toPull.push({ w, current });
             else { inSync.push({ w, current }); report.unchanged++; }
@@ -505,7 +529,8 @@ export class SyncEngine {
             const id = w.id as number;
             const record = state.notes[id];
             if (newLine === w.card.raw) {
-                if (!record || record.obsHash !== w.obsHash || record.file !== file.path || updated.some((u) => u.w === w)) {
+                const stale = !record || (record.v ?? 1) < RECORD_VERSION || record.obsHash !== w.obsHash || record.file !== file.path;
+                if (stale || updated.some((u) => u.w === w)) {
                     recordAfterWrite.push({ id, obsHash: w.obsHash });
                 }
                 continue;
@@ -558,7 +583,7 @@ export class SyncEngine {
         recordAfterWrite.forEach(({ id, obsHash }) => {
             const current = after.get(id);
             if (!current) return;
-            state.notes[id] = { file: file.path, obsHash, ankiHash: ankiHashOf(current) };
+            state.notes[id] = { file: file.path, obsHash, ankiHash: ankiHashOf(current), v: RECORD_VERSION };
         });
         await this.saveState();
     }

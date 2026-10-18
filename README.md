@@ -56,6 +56,7 @@ How sync works:
 - Edit in Obsidian -> pushed to Anki. Edit in Anki -> written back to the note. Both edited -> conflict setting (newest edit wins by default).
 - Anki review history is never touched. Deleting a note in Anki re-creates it on the next sync. Changing `::` to `:::` (card type) replaces the note.
 - New note ids are saved to a journal before the note file is written, so if the file changes mid-sync or Obsidian closes, the next sync picks the id back up and doesn't create a duplicate.
+- Cards synced by an older version of the plugin are upgraded by _Update older cards to the latest format_ (or any vault sync): they get `{{deck::}}`/`{{tag::}}` fields showing their current Anki deck and tags, without moving them, and edits made on either side since the last sync are still applied.
 - Deck priority: `{{deck::}}` on the line, then `anki-deck: My Deck` in the note's frontmatter, then the default deck from settings.
 - Bold, italics, inline code, `$math$` and `<br>` round-trip. Other formatting edited in Anki is reduced to plain text when pulled back. Images are not synced.
 
