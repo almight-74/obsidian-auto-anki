@@ -219,3 +219,9 @@ body.aa-fields-hide .markdown-preview-view .aa-card-field {
 .aa-picker-input {
     min-width: 10em;
 }
+
+.aa-focus-input {
+    width: 100%;
+    min-width: 16em;
+    resize: vertical;
+}

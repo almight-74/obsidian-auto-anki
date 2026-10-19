@@ -56,6 +56,9 @@ function systemPrompt(numQuestions: number, numVariants: number, opts: Generatio
         'One fact per card, no overlapping cards, questions understandable without the notes. Single-line text; markdown **bold**, *italic*, `code`, $math$ allowed.',
     ];
     if (opts.extra) lines.push('extra: one short line of context, explanation or mnemonic that helps remember the answer.');
+    if (opts.focus?.trim()) {
+        lines.push(`Focus only on: ${opts.focus.trim()}. Skip material unrelated to it; write fewer cards rather than off-topic ones.`);
+    }
     return lines.join('\n');
 }
 

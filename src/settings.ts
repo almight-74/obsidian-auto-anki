@@ -30,6 +30,7 @@ export interface GenerationOptions {
 	difficulty: Difficulty;
 	conciseness: Conciseness;
 	extra: boolean;
+	focus?: string;   // per-run instruction, e.g. "mechanisms and side effects"
 }
 
 export interface SyncSettings {

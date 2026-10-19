@@ -135,6 +135,17 @@ export class ExportModal extends Modal {
                 .onChange((value) => { this.options.extra = value })
             );
 
+        new Setting(contentEl)
+            .setName('Focus (optional)')
+            .setDesc('Areas to make cards about, e.g. "mechanisms and side effects" or "dates and causes". Leave empty to cover everything.')
+            .addTextArea((t) => {
+                t.setPlaceholder('Focus on...')
+                    .setValue(this.options.focus ?? '')
+                    .onChange((value) => { this.options.focus = value });
+                t.inputEl.rows = 2;
+                t.inputEl.addClass('aa-focus-input');
+            });
+
         const picker = new DeckTagPicker(contentEl, this.target.cache, this.target.deck, this.target.tags);
 
         new Setting(contentEl)

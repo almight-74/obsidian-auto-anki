@@ -90,7 +90,7 @@ function createMessages(notes: string, num: number, opts: GenerationOptions) {
 - JSON format: ${format}
 - cover the whole notes, no similar or repeated questions
 - difficulty: ${GPT_DIFFICULTY[opts.difficulty]}
-- answers: ${GPT_CONCISENESS[opts.conciseness]}`,
+- answers: ${GPT_CONCISENESS[opts.conciseness]}${opts.focus?.trim() ? `\n- focus only on: ${opts.focus.trim()}; skip unrelated material` : ''}`,
     } as ChatCompletionSystemMessageParam)
 
     // Insert sample user prompt
