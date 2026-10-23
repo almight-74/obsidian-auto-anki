@@ -225,3 +225,19 @@ body.aa-fields-hide .markdown-preview-view .aa-card-field {
     min-width: 16em;
     resize: vertical;
 }
+
+.aa-context-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3em;
+    max-height: 12em;
+    overflow-y: auto;
+    padding: 0 0 0.75em;
+}
+
+.aa-context-option {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    cursor: pointer;
+}

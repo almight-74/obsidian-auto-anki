@@ -7,6 +7,8 @@ import type {
     ChatCompletionSystemMessageParam,
 } from 'openai/resources';
 import logger from 'src/logger';
+import { obsidianFetch } from './http';
+import { contextBlock } from './context';
 import { GenerationOptions, GptAdvancedOptions } from 'src/settings';
 
 export interface CardInformation {
@@ -109,9 +111,12 @@ function createMessages(notes: string, num: number, opts: GenerationOptions) {
     } as ChatCompletionAssistantMessageParam);
 
     // Insert notes
+    const context = opts.context && opts.context.length > 0
+        ? `\n\nBackground from linked notes (use only to make answers accurate, not as separate topics):\n${contextBlock(opts.context)}`
+        : '';
     messages.push({
         role: 'user',
-        content: `\n${notes.trim()}\n`,
+        content: `\n${notes.trim()}\n${context}`,
     } as ChatCompletionUserMessageParam);
 
     return messages;
@@ -127,7 +132,7 @@ export async function convertNotesToFlashcards(
 ) {
     let response: ChatCompletion;
     try {
-        const client = new OpenAI({ apiKey, dangerouslyAllowBrowser: true });
+        const client = new OpenAI({ apiKey, dangerouslyAllowBrowser: true, fetch: obsidianFetch as unknown as typeof fetch });
 
         const {
             max_tokens_per_question: tokensPerQuestion,
@@ -196,5 +201,18 @@ export async function convertNotesToFlashcards(
             message: `Something happened while parsing OpenAI output! Please contact a developer for more support.`,
         });
         return [];
+    }
+}
+
+// checks the key without generating anything (no tokens used)
+export async function testOpenAi(apiKey: string) {
+    try {
+        const client = new OpenAI({ apiKey, dangerouslyAllowBrowser: true, fetch: obsidianFetch as unknown as typeof fetch, maxRetries: 0 });
+        await client.models.list();
+        return { ok: true, message: 'Connected to OpenAI.' };
+    }
+    catch (err) {
+        const status = err.status ? `(${err.status}) ` : '';
+        return { ok: false, message: `${status}${err.message ?? String(err)}` };
     }
 }

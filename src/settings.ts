@@ -31,6 +31,7 @@ export interface GenerationOptions {
 	conciseness: Conciseness;
 	extra: boolean;
 	focus?: string;   // per-run instruction, e.g. "mechanisms and side effects"
+	context?: { title: string; text: string }[];   // linked notes sent as background
 }
 
 export interface SyncSettings {

@@ -29,9 +29,9 @@ import { AnkiDeckModal, CardGenerator, CardTarget, ExportModal, HeadingPickerMod
 import { ANKI_CONNECT_DEFAULT_PORT, ankiInvoke } from './utils/anki';
 import { isNumeric } from './utils/validations';
 import { StatusBarElement } from './utils/cusom-types';
-import { CardInformation, checkGpt, convertNotesToFlashcards } from './utils/gpt';
-import { convertNotesToFlashcardsWithClaude } from './utils/claude';
-import { compactNotes } from './utils/text';
+import { CardInformation, checkGpt, convertNotesToFlashcards, testOpenAi } from './utils/gpt';
+import { convertNotesToFlashcardsWithClaude, testClaude } from './utils/claude';
+import { compactNotes, parseHeadings, sectionLines } from './utils/text';
 import { cardFieldsExtension, wrapCardFields } from './editor';
 import { AnkiCache, CardFieldSuggest, SyncOptionsModal, noteDefaults } from './ui';
 import { applyDeckAndTags, parseCards } from './sync/parser';
@@ -383,6 +383,18 @@ export default class AutoAnkiPlugin extends Plugin {
 		}
 	}
 
+	async testAi(): Promise<{ ok: boolean; message: string }> {
+		const s = this.settings;
+		if (s.aiProvider === 'anthropic') {
+			const key = this.getSecret(s.anthropicSecretId);
+			if (!key) return { ok: false, message: 'No Anthropic API key found. Pick or create one in "Anthropic API Key" below.' };
+			return testClaude(key, s.anthropicModel);
+		}
+		const key = this.getSecret(s.openAiSecretId);
+		if (!key) return { ok: false, message: 'No OpenAI API key found. Pick or create one in "OpenAI API Key" below.' };
+		return testOpenAi(key);
+	}
+
 	getSecret(id: string) {
 		return id ? this.app.secretStorage.getSecret(id) : null;
 	}
@@ -403,40 +415,30 @@ export default class AutoAnkiPlugin extends Plugin {
 	}
 
 	openHeadingPicker(view: MarkdownView) {
-		const lines = view.data.split('\n');
+		// read from the editor so headings typed moments ago are included
+		const text = view.editor.getValue();
+		const lines = text.split('\n');
+		const all = parseHeadings(text);
 		const flashcardsHeading = this.settings.aiHeading.trim().toLowerCase();
-		const headings: NoteHeading[] = (this.app.metadataCache.getFileCache(view.file as TFile)?.headings ?? [])
-			.map((h) => ({ heading: h.heading, level: h.level, line: h.position.start.line }))
-			.filter((h) => h.heading.trim().toLowerCase() !== flashcardsHeading);
+		const isFlashcards = (h: NoteHeading) => h.heading.trim().toLowerCase() === flashcardsHeading;
+		const headings = all.filter((h) => !isFlashcards(h));
 		if (headings.length === 0) {
 			new Notice('This note has no headings');
 			return;
 		}
 
 		new HeadingPickerModal(this.app, headings, (chosen) => {
-			// a section runs to the next heading of the same or higher level;
 			// overlapping picks (parent + child) are merged so text isn't sent twice
-			const all = this.app.metadataCache.getFileCache(view.file as TFile)?.headings ?? [];
-			const include = new Set<number>();
-			for (const h of chosen) {
-				const next = all.find((o) => o.position.start.line > h.line && o.level <= h.level);
-				const end = next ? next.position.start.line : lines.length;
-				for (let i = h.line; i < end; i++) include.add(i);
-			}
+			const include = sectionLines(all, chosen, lines.length);
 			// never send the generated-cards section back to the AI
-			const fc = all.find((o) => o.heading.trim().toLowerCase() === flashcardsHeading);
-			if (fc) {
-				const next = all.find((o) => o.position.start.line > fc.position.start.line && o.level <= fc.level);
-				const end = next ? next.position.start.line : lines.length;
-				for (let i = fc.position.start.line; i < end; i++) include.delete(i);
-			}
-			const text = lines.filter((_, i) => include.has(i)).join('\n');
-			if (text.trim().length === 0) {
+			sectionLines(all, all.filter(isFlashcards), lines.length).forEach((i) => include.delete(i));
+			const sectionText = lines.filter((_, i) => include.has(i)).join('\n');
+			if (sectionText.trim().length === 0) {
 				new Notice('The chosen sections are empty');
 				return;
 			}
 			const defaults = this.settings.questionGenerationDefaults.textSelection;
-			this.openAiModal(view, text, null, defaults.numQuestions, defaults.numAlternatives);
+			this.openAiModal(view, sectionText, null, defaults.numQuestions, defaults.numAlternatives);
 		}).open();
 	}
 
@@ -464,7 +466,7 @@ export default class AutoAnkiPlugin extends Plugin {
 			generate,
 			onConfirm,
 			this.settings.generation,
-			{ cache: this.ankiCache, ...defaults },
+			{ cache: this.ankiCache, ...defaults, sourcePath: file.path },
 			numQuestions,
 			numAlternatives,
 		).open();
@@ -794,6 +796,22 @@ class AutoAnkiSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				})
 			);
+
+		const aiTestSetting = new Setting(containerEl)
+			.setName('Test AI connection')
+			.setDesc('Checks the API key and model name. Uses no tokens.');
+		const aiTestResult = containerEl.createEl('div', { cls: 'anki-connection-result' });
+		aiTestSetting.addButton(btn => btn
+			.setButtonText('Test AI')
+			.onClick(async () => {
+				btn.setDisabled(true).setButtonText('Testing...');
+				const r = await this.plugin.testAi();
+				btn.setDisabled(false).setButtonText('Test AI');
+				aiTestResult.setText(r.message);
+				aiTestResult.toggleClass('--ok', r.ok);
+				aiTestResult.toggleClass('--error', !r.ok);
+			})
+		);
 
 		const anthropicDescription = new DocumentFragment();
 		const anthropicDescHtml = document.createElement('p');

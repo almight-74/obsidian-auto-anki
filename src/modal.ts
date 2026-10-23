@@ -1,10 +1,9 @@
 import { App, Modal, Notice, Setting } from 'obsidian';
 import { Conciseness, Difficulty, GenerationOptions } from './settings';
 import { AnkiCache, DeckTagPicker } from './ui';
+import { findLinkedNotes, loadContextNotes, parseNoteInput } from './utils/context';
 
 import { 
-    checkAnkiAvailability,
-    checkAnkiDecksExist,
     exportToAnki,
     getAnkiDecks,
 } from './utils/anki';
@@ -52,7 +51,7 @@ export class ExportModal extends Modal {
         generate: CardGenerator,
         onConfirm: CardsConfirmedHandler,
         defaultOptions: GenerationOptions,
-        private target: { cache: AnkiCache; deck: string; tags: string[] },
+        private target: { cache: AnkiCache; deck: string; tags: string[]; sourcePath: string },
         dafaultNumQuestions?: number,
         defaultNumAlternatives?: number,
     ) {
@@ -72,17 +71,6 @@ export class ExportModal extends Modal {
 
     async onOpen() {
         const { contentEl } = this;
-
-        const isAnkiAvailable = await checkAnkiAvailability(this.port);
-        // update status bar if error/success
-        if (this.statusBar.doDisplayError && !isAnkiAvailable) this.statusBar.doDisplayError();
-        if (this.statusBar.doReset && isAnkiAvailable) this.statusBar.doReset();
-        if (!isAnkiAvailable) return this.close();
-
-        const ankiCheck = await checkAnkiDecksExist(this.port);
-        if (this.statusBar.doDisplayError && !ankiCheck) this.statusBar.doDisplayError();
-        if (this.statusBar.doReset && ankiCheck) this.statusBar.doReset();
-        if (!ankiCheck) return this.close();
 
         contentEl.createEl('h1', { text: 'How many questions should be generated?' });
 
@@ -146,6 +134,32 @@ export class ExportModal extends Modal {
                 t.inputEl.addClass('aa-focus-input');
             });
 
+        // linked notes the AI may use as background
+        const linked = findLinkedNotes(this.app, this.data, this.target.sourcePath);
+        const chosen = new Set<number>();
+        new Setting(contentEl)
+            .setName('Linked notes as context')
+            .setDesc(linked.length > 0
+                ? 'Tick notes the AI may use as background for accurate answers. Each is trimmed to keep token use down.'
+                : 'No [[links]] in this text. You can add notes below.');
+        if (linked.length > 0) {
+            const list = contentEl.createDiv({ cls: 'aa-context-list' });
+            linked.forEach((n, i) => {
+                const row = list.createEl('label', { cls: 'aa-context-option' });
+                const cb = row.createEl('input', { type: 'checkbox' });
+                cb.onchange = () => { if (cb.checked) chosen.add(i); else chosen.delete(i); };
+                row.createSpan({ text: n.label });
+            });
+        }
+        let typedNotes = '';
+        new Setting(contentEl)
+            .setName('Add context notes')
+            .setDesc('Type [[Note]] or [[Note#Heading]] links, or note names separated by commas.')
+            .addText((t) => t
+                .setPlaceholder('[[Pharmacology basics]]')
+                .onChange((v) => { typedNotes = v; })
+            );
+
         const picker = new DeckTagPicker(contentEl, this.target.cache, this.target.deck, this.target.tags);
 
         new Setting(contentEl)
@@ -161,6 +175,10 @@ export class ExportModal extends Modal {
                     this.close();
 
                     if (this.statusBar.doDisplayRunning) this.statusBar.doDisplayRunning();
+                    const typed = parseNoteInput(this.app, typedNotes, this.target.sourcePath);
+                    if (typedNotes.trim() && typed.length === 0) new Notice(`No notes found for "${typedNotes}"; generating without them.`);
+                    const picked = [...linked.filter((_, i) => chosen.has(i)), ...typed];
+                    this.options.context = picked.length > 0 ? await loadContextNotes(this.app, picked) : undefined;
                     const card_sets: Array<CardInformation[]> = await this.generate(
                         this.data,
                         this.n_q,

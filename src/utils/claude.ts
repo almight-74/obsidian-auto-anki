@@ -3,6 +3,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import logger from 'src/logger';
 import { GenerationOptions } from 'src/settings';
 import { CardInformation } from './gpt';
+import { obsidianFetch } from './http';
+import { contextBlock } from './context';
 
 const DIFFICULTY: Record<GenerationOptions['difficulty'], string> = {
     'easy': 'easy: recall of key terms, names and definitions',
@@ -56,10 +58,35 @@ function systemPrompt(numQuestions: number, numVariants: number, opts: Generatio
         'One fact per card, no overlapping cards, questions understandable without the notes. Single-line text; markdown **bold**, *italic*, `code`, $math$ allowed.',
     ];
     if (opts.extra) lines.push('extra: one short line of context, explanation or mnemonic that helps remember the answer.');
+    if (opts.context && opts.context.length > 0) {
+        lines.push('The <notes> are what the cards are about. <context_note> blocks are background from linked notes: use them to make answers accurate and complete, not as separate topics.');
+    }
     if (opts.focus?.trim()) {
         lines.push(`Focus only on: ${opts.focus.trim()}. Skip material unrelated to it; write fewer cards rather than off-topic ones.`);
     }
     return lines.join('\n');
+}
+
+function describeApiError(err: InstanceType<typeof Anthropic.APIError>) {
+    const body = err.error as { error?: { message?: string } } | undefined;
+    const detail = body?.error?.message ?? err.message;
+    if (err.status === 404) return `Model not found (${detail}). Check the Claude model name in settings.`;
+    if (err.status == null) return `Could not reach the Anthropic API: ${detail}`;
+    return `(${err.status}) ${detail}`;
+}
+
+// checks key + model without generating anything (no tokens used)
+export async function testClaude(apiKey: string, model: string) {
+    const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, fetch: obsidianFetch, maxRetries: 0 });
+    try {
+        const info = await client.models.retrieve(model);
+        return { ok: true, message: `Connected to Claude. Model "${info.id}" is available.` };
+    }
+    catch (err) {
+        if (err instanceof Anthropic.AuthenticationError) return { ok: false, message: 'The Anthropic API key was rejected. Check it in the keychain.' };
+        if (err instanceof Anthropic.APIError) return { ok: false, message: describeApiError(err) };
+        return { ok: false, message: String(err.message ?? err) };
+    }
 }
 
 export async function convertNotesToFlashcardsWithClaude(
@@ -70,17 +97,22 @@ export async function convertNotesToFlashcardsWithClaude(
     numSets: number,
     opts: GenerationOptions,
 ): Promise<CardInformation[][]> {
-    const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
+    const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, fetch: obsidianFetch, maxRetries: 1 });
     try {
         // one request for all variants so the notes are only sent (and billed) once
         const perCard = (opts.conciseness === 'detailed' ? 120 : 60) + (opts.extra ? 50 : 0);
+        const content = opts.context && opts.context.length > 0
+            ? `<notes>\n${notes}\n</notes>\n${contextBlock(opts.context)}`
+            : notes;
         const response = await client.beta.messages.create({
             model,
-            max_tokens: Math.min(16000, 2048 + numQuestions * numSets * perCard),
+            // a ceiling, not a target: only generated tokens are billed. Thinking counts
+            // toward it, so leave headroom or the reply gets cut off.
+            max_tokens: Math.min(32000, 8000 + numQuestions * numSets * perCard),
             betas: ['server-side-fallback-2026-07-01'],
             fallbacks: 'default',
             system: systemPrompt(numQuestions, numSets, opts),
-            messages: [{ role: 'user', content: notes }],
+            messages: [{ role: 'user', content }],
             output_config: {
                 effort: 'low',
                 format: { type: 'json_schema', schema: cardsSchema(opts.extra) },
@@ -108,7 +140,7 @@ export async function convertNotesToFlashcardsWithClaude(
         let message = err.message ?? String(err);
         if (err instanceof Anthropic.AuthenticationError) message = 'Check that your Anthropic API key is correct/valid!';
         else if (err instanceof Anthropic.RateLimitError) message = 'Rate limited by the Anthropic API, try again shortly.';
-        else if (err instanceof Anthropic.APIError) message = `(${err.status}) ${err.message}`;
+        else if (err instanceof Anthropic.APIError) message = describeApiError(err);
         logger.log({ level: 'error', message: `Could not generate cards with Claude! ${message}` });
         return [];
     }

@@ -62,9 +62,11 @@ How sync works:
 
 ## AI Card Generation (optional)
 
+Use **Test AI connection** in settings to check the API key and model name (uses no tokens).
+
 Token use is kept low: notes are stripped of frontmatter, links, embeds and sync markers before sending; alternatives come from a single request; Claude runs at low effort. For the lowest cost set the model to `claude-haiku-5-5`.
 
-_Generate cards with AI from current note_ / _from selection_ / _from headings_ (tick only the sections you want, e.g. today's new heading) uses Claude (default, `claude-opus-5-5`; any Claude model id can be set) or OpenAI GPT. Choose difficulty, answer length, whether to add an extra field, and optionally a focus (e.g. "mechanisms and side effects") to only make cards about certain areas, then review and edit the cards. They're inserted at the end of the note's `## Flashcards` section (created if missing; heading configurable) and synced, so they're tracked like hand-written cards. Turn off "Insert generated cards into note" to send them straight to Anki without tracking.
+_Generate cards with AI from current note_ / _from selection_ / _from headings_ (tick only the sections you want, e.g. today's new heading) uses Claude (default, `claude-opus-5-5`; any Claude model id can be set) or OpenAI GPT. Optionally tick `[[linked]]` notes (or type more, including `[[Note#Heading]]`) for the AI to use as background; they're trimmed to keep token use down. Choose difficulty, answer length, whether to add an extra field, and optionally a focus (e.g. "mechanisms and side effects") to only make cards about certain areas, then review and edit the cards. They're inserted at the end of the note's `## Flashcards` section (created if missing; heading configurable) and synced, so they're tracked like hand-written cards. Turn off "Insert generated cards into note" to send them straight to Anki without tracking.
 
 ## Plugin Requirements
 
